@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import sqlite3
 import time
@@ -266,6 +267,49 @@ CREATE TABLE IF NOT EXISTS candidates (
 """
 
 
+# ---------------- 落盘前脱敏 ----------------
+# 原则：在写进 SQLite 之前就把敏感值抹掉，而不是展示时再遮挡。
+# 这样即使有人直接打开 data/harness.db，也看不到凭据。
+
+MASK = "***"
+_SECRET_KEYS = ("key", "token", "secret", "password", "passwd", "authorization",
+                "cookie", "credential", "session")
+_SECRET_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_\-]{10,}"),
+    re.compile(r"ghp_[A-Za-z0-9]{10,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{10,}"),
+    re.compile(r"Bearer\s+[A-Za-z0-9._\-]{10,}"),
+    re.compile(r"\b[0-9a-f]{32,}\b"),
+)
+
+
+def _scrub_text(value: str) -> str:
+    out = value
+    for pat in _SECRET_PATTERNS:
+        out = pat.sub(MASK, out)
+    return out
+
+
+def _redact(obj: Any, depth: int = 0) -> Any:
+    """递归抹掉敏感字段与疑似凭据。深度上限防止自引用。"""
+    if depth > 8:
+        return MASK
+    if isinstance(obj, dict):
+        clean = {}
+        for k, v in obj.items():
+            key = str(k).lower()
+            if any(t in key for t in _SECRET_KEYS):
+                clean[k] = MASK if v else v
+            else:
+                clean[k] = _redact(v, depth + 1)
+        return clean
+    if isinstance(obj, (list, tuple)):
+        return [_redact(v, depth + 1) for v in obj]
+    if isinstance(obj, str):
+        return _scrub_text(obj)
+    return obj
+
+
 class Store:
     """SQLite 落盘。页面的唯一事实来源是它，不是内存。"""
 
@@ -302,7 +346,8 @@ class Store:
         seq = self._next_seq(task_id)
         self.conn.execute(
             "INSERT INTO events(task_id,seq,stage,at,payload) VALUES(?,?,?,?,?)",
-            (task_id, seq, stage, time.time(), json.dumps(payload, ensure_ascii=False) if payload is not None else None),
+            (task_id, seq, stage, time.time(),
+             json.dumps(_redact(payload), ensure_ascii=False) if payload is not None else None),
         )
         self.conn.commit()
         return seq
