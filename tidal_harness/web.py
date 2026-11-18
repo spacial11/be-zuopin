@@ -362,6 +362,13 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
 /* 大输入框 */
 #desc{min-height:92px;font-size:14px;line-height:1.7}
 
+
+/* 回放控制条 */
+.replay-bar{display:flex;align-items:center;gap:10px;margin:12px 0 2px;flex-wrap:wrap}
+.replay-tip{font-size:12px;color:var(--muted)}
+.replay-badge{font-size:12px;padding:3px 11px;border-radius:999px;background:#fff3d6;color:#8a5a00;border:1px solid #f2d59b;font-weight:600}
+.replay-badge.hidden{display:none}
+.node.hl{background:#fff8e6;border-radius:8px;box-shadow:0 0 0 1px #f0d9a8 inset}
 </style></head>
 <body>
 <header class="topbar">
@@ -396,6 +403,11 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
       <div class="stat"><b id="statCache">—</b><span>缓存命中</span></div>
       <div class="stat"><b id="statSugg">—</b><span>建议命中率</span></div>
       <div class="stat"><b id="statFacts">—</b><span>锁定事实</span></div>
+    </div>
+    <div class="replay-bar">
+      <button id="replayBtn" class="ghost">逐轮回放</button>
+      <span class="replay-tip" id="replayTip">把最近一个任务按轮次一步步放给你看</span>
+      <span class="replay-badge hidden" id="replayBadge"></span>
     </div>
     <div class="sugg-bar"><span class="sugg-label">下一步可能是</span><div id="suggests"></div><span id="suggStats" class="sugg-stat"></span></div>
     <div id="tasks"></div>
@@ -718,6 +730,44 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
   window.loadEvents = async (id) => { if (origLoadEvents) await origLoadEvents(id); loadChain(id); };
   fetch('/api/tasks').then(r => r.json()).then(d => { if (d.tasks && d.tasks[0]) loadChain(d.tasks[0].task_id); });
 })();
+
+  // ---- 逐轮回放：每轮停顿，自动往下走 ----
+  let replayTimer = null;
+  const parseJ = (x) => { try { return JSON.parse(x || '{}'); } catch (_) { return {}; } };
+  async function replayRounds(){
+    if (replayTimer) { clearInterval(replayTimer); replayTimer = null; }
+    const badge = document.getElementById('replayBadge');
+    const tip = document.getElementById('replayTip');
+    const tasks = await (await fetch('/api/tasks')).json();
+    const t = tasks.tasks && tasks.tasks[0];
+    if (!t) { tip.textContent = '还没有任务，先点「开始执行」'; return; }
+    const d = await (await fetch('/api/tasks/' + encodeURIComponent(t.task_id))).json();
+    const evs = d.events || [];
+    const only = evs.filter(e => /check-tests|check-review|do/.test(e.stage));
+    const rounds = [...new Set(only.map(e => parseJ(e.payload).round).filter(x => x > 0))].sort((a,b)=>a-b);
+    if (!rounds.length) { tip.textContent = '这个任务没有可回放的轮次'; return; }
+    const nodes = [...document.querySelectorAll('#chain .node')];
+    const per = Math.max(1, Math.floor(nodes.length / rounds.length));
+    let i = 0;
+    const step = () => {
+      nodes.forEach(n => n.classList.remove('hl'));
+      const r = rounds[i];
+      badge.textContent = '第 ' + r + ' 轮 / 共 ' + rounds.length + ' 轮';
+      badge.classList.remove('hidden');
+      const seg = nodes.slice(i * per, (i + 1) * per);
+      seg.forEach(n => n.classList.add('hl'));
+      if (seg[0]) seg[0].scrollIntoView({block:'center', behavior:'smooth'});
+      tip.textContent = (i === rounds.length - 1) ? '最后一轮：' + r : '正在回放第 ' + r + ' 轮，下一轮自动开始';
+      i++;
+      if (i >= rounds.length) {
+        clearInterval(replayTimer); replayTimer = null;
+        tip.textContent = '回放结束：共 ' + rounds.length + ' 轮';
+      }
+    };
+    step();
+    replayTimer = setInterval(step, 2200);
+  }
+  document.getElementById('replayBtn').onclick = replayRounds;
 
 </script></body></html>"""
 
