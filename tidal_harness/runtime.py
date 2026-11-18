@@ -246,7 +246,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   rounds INTEGER NOT NULL DEFAULT 0,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
-  detail TEXT
+  detail TEXT,
+  title TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -298,8 +299,9 @@ def _redact(obj: Any, depth: int = 0) -> Any:
         clean = {}
         for k, v in obj.items():
             key = str(k).lower()
-            if any(t in key for t in _SECRET_KEYS):
-                clean[k] = MASK if v else v
+            looks_secret = any(t in key for t in _SECRET_KEYS) and not key.endswith("tokens")
+            if looks_secret and isinstance(v, str) and v.strip():
+                clean[k] = MASK
             else:
                 clean[k] = _redact(v, depth + 1)
         return clean
@@ -318,18 +320,24 @@ class Store:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "title" not in cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN title TEXT")
+            self.conn.commit()
         self.conn.commit()
         self._seq: dict[str, int] = {}
 
     # ---- 任务 ----
-    def upsert_task(self, task_id: str, digest: str, status: str, rounds: int = 0, detail: Any = None) -> None:
+    def upsert_task(self, task_id: str, digest: str, status: str, rounds: int = 0, detail: Any = None, title: str | None = None) -> None:
         now = time.time()
         self.conn.execute(
-            """INSERT INTO tasks(task_id,digest,status,rounds,created_at,updated_at,detail)
-               VALUES(?,?,?,?,?,?,?)
+            """INSERT INTO tasks(task_id,digest,status,rounds,created_at,updated_at,detail,title)
+               VALUES(?,?,?,?,?,?,?,?)
                ON CONFLICT(task_id) DO UPDATE SET status=excluded.status,
-                 rounds=excluded.rounds, updated_at=excluded.updated_at, detail=excluded.detail""",
-            (task_id, digest, status, rounds, now, now, json.dumps(detail, ensure_ascii=False) if detail is not None else None),
+                 rounds=excluded.rounds, updated_at=excluded.updated_at, detail=excluded.detail,
+                 title=COALESCE(excluded.title, tasks.title)""",
+            (task_id, digest, status, rounds, now, now,
+             json.dumps(detail, ensure_ascii=False) if detail is not None else None, title),
         )
         self.conn.commit()
 

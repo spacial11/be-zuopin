@@ -252,7 +252,7 @@ class Engine:
         contract.validate()
         started = time.time()
         digest = contract.digest()
-        self.store.upsert_task(contract.task_id, digest, "running", 0)
+        self.store.upsert_task(contract.task_id, digest, "running", 0, title=contract.description)
         self.store.event(contract.task_id, "queued", {"digest": digest})
 
         plan = self.planner.plan(contract)

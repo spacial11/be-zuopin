@@ -191,9 +191,9 @@ def bridge_events(engine, hub: Hub, chat: ChatStore, demo: bool = True):
     # 任务结束（成功/失败）也要说一句：Engine 用 upsert_task 收尾
     original_upsert = engine.store.upsert_task
 
-    def wrapped_upsert(task_id, digest, status, rounds=0, detail=None):
+    def wrapped_upsert(task_id, digest, status, rounds=0, detail=None, title=None):
         previous = engine.store.task(task_id)
-        original_upsert(task_id, digest, status, rounds, detail)
+        original_upsert(task_id, digest, status, rounds, detail, title=title)
         if status in ("succeeded", "failed") and (not previous or previous.get("status") != status):
             text = ("搞定了：两道门都过，结果已经写进缓存。" if status == "succeeded"
                     else f"任务失败：{rounds} 轮都没过，我把原因记下来了。")
@@ -228,75 +228,224 @@ HTML = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ye队作品 · 控制台</title>
 <style>
-:root{--blue:#1d4ed8;--dark:#122e7a;--ink:#1a1a1a;--muted:#5b6b7a;--line:#dde6f2;--bg:#f5f8fd}
+:root{
+  --navy:#0f2a5f; --blue:#1d4ed8; --blue-soft:#eaf1fe;
+  --ink:#16202e; --muted:#61707f; --line:#e2e9f3; --bg:#f4f7fc;
+  --ok:#0a7a3d; --ok-bg:#e7f6ec; --warn:#b45309; --warn-bg:#fff7e6;
+  --fail:#b42318; --fail-bg:#fdecea;
+}
 *{box-sizing:border-box}
-body{margin:0;font:14px/1.6 "Segoe UI","微软雅黑",system-ui,sans-serif;color:var(--ink);background:var(--bg)}
-header{background:linear-gradient(90deg,#14337a,#1d4ed8);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:14px}
-header b{font-size:17px;letter-spacing:.5px}
-header span{opacity:.75;font-size:12.5px}
-main{display:grid;grid-template-columns:1.05fr .95fr;gap:16px;padding:16px 22px 24px}
-.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:0 1px 2px rgba(20,51,122,.04)}
-.card h2{font-size:14px;margin:0 0 10px;color:var(--dark);display:flex;justify-content:space-between;align-items:center}
-.card h2 small{font-weight:400;color:var(--muted)}
+body{margin:0;font:14px/1.65 "Segoe UI","微软雅黑",system-ui,sans-serif;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased}
+
+/* 顶栏 */
+.topbar{background:#fff;border-bottom:1px solid var(--line);padding:12px 26px;display:flex;align-items:center;justify-content:space-between;gap:16px;position:sticky;top:0;z-index:20}
+.brand{display:flex;align-items:center;gap:12px}
+.logo{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#14337a,#1d4ed8);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;letter-spacing:.5px}
+.title{font-size:16px;font-weight:700;color:var(--navy);letter-spacing:.3px}
+.sub{font-size:12px;color:var(--muted);margin-top:1px}
+.top-actions{display:flex;align-items:center;gap:10px}
+.pill{font-size:12px;padding:3px 10px;border-radius:999px;background:var(--ok-bg);color:var(--ok);border:1px solid #cfe9d8}
+
+/* 布局 */
+main{display:grid;grid-template-columns:1.08fr .92fr;gap:18px;padding:18px 26px 30px;max-width:1560px;margin:0 auto}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 20px;box-shadow:0 2px 10px rgba(15,42,95,.05)}
+.card h2{font-size:14px;margin:0 0 4px;color:var(--navy);display:flex;justify-content:space-between;align-items:center;font-weight:700}
+.card h2 small{font-weight:400;color:var(--muted);font-size:12px}
+.hint{font-size:12px;color:var(--muted);margin:0 0 12px}
+.divider{height:1px;background:var(--line);margin:16px 0 14px}
+
+/* 表单 */
 input,textarea,button{font:inherit}
-input[type=text],textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;outline:none;background:#fbfdff}
-textarea{resize:vertical;min-height:60px}
-button{border:0;border-radius:8px;padding:8px 14px;background:var(--blue);color:#fff;cursor:pointer}
-button.ghost{background:#eaf1fe;color:var(--dark)}
+input[type=text],textarea{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 11px;outline:none;background:#fbfdff;transition:border-color .15s}
+input[type=text]:focus,textarea:focus{border-color:#9dbcff;background:#fff}
+button{border:0;border-radius:9px;padding:9px 16px;background:var(--blue);color:#fff;cursor:pointer;font-weight:600;white-space:nowrap;transition:filter .15s}
+button:hover{filter:brightness(1.06)}
+button.ghost{background:var(--blue-soft);color:var(--navy)}
 button:disabled{opacity:.5;cursor:default}
 .row{display:flex;gap:8px;margin-top:8px}
-.task{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:8px}
-.task .top{display:flex;justify-content:space-between;font-size:12.5px}
-.badge{font-size:11.5px;padding:1px 8px;border-radius:20px;background:#eaf1fe;color:var(--dark)}
-.badge.ok{background:#e7f6ec;color:#0a7a3d}
-.badge.fail{background:#fdecea;color:#b42318}
-.events{max-height:180px;overflow:auto;font:12px/1.5 Consolas,monospace;color:#445;background:#fbfdff;border:1px dashed var(--line);border-radius:8px;padding:8px}
-.sugg-bar{display:flex;align-items:center;gap:8px;margin:10px 0 4px;flex-wrap:wrap}
+
+/* 任务列表 */
+.task{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fcfdff}
+.task .top{display:flex;justify-content:space-between;font-size:12.5px;gap:10px}
+.badge{font-size:11.5px;padding:1px 9px;border-radius:999px;background:var(--blue-soft);color:var(--navy);white-space:nowrap}
+.badge.ok{background:var(--ok-bg);color:var(--ok)}
+.badge.fail{background:var(--fail-bg);color:var(--fail)}
+
+/* 事件 */
+.events{min-height:140px;max-height:200px;overflow:auto;font:12px/1.55 Consolas,"Cascadia Mono",monospace;color:#3d4b5c;background:#f8fafd;border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+
+/* 建议 */
+.sugg-bar{display:flex;align-items:center;gap:9px;margin:12px 0 6px;flex-wrap:wrap}
 .sugg-label{font-size:12px;color:var(--muted);white-space:nowrap}
-#suggests{display:flex;gap:6px;flex-wrap:wrap;flex:1}
-.chip{border:1px solid var(--line);background:#f4f8ff;color:var(--dark);border-radius:999px;padding:5px 11px;font-size:12.5px;cursor:pointer;font-family:inherit}
+#suggests{display:flex;gap:7px;flex-wrap:wrap;flex:1}
+.chip{border:1px solid #cfe0ff;background:#f4f8ff;color:var(--navy);border-radius:999px;padding:6px 13px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:background .15s}
 .chip:hover{background:#e8f1ff}
 .sugg-stat{font-size:11.5px;color:var(--muted);white-space:nowrap}
-.inner-wrap{max-height:190px;overflow:auto}
+
+/* 决策记录表 */
 table.inner{width:100%;border-collapse:collapse;font-size:12px}
-table.inner th{background:#eaf1fe;color:var(--dark);font-weight:600;text-align:left;padding:4px 6px;border:1px solid var(--line)}
-table.inner td{padding:4px 6px;border:1px solid var(--line);vertical-align:top}
-table.inner td.mono{font-family:Consolas,monospace;font-size:11px;color:#445}
-#chat{height:52vh;overflow:auto;padding:4px 2px}
-.msg{margin:8px 0;display:flex}
-.msg .bub{max-width:84%;padding:8px 12px;border-radius:12px;background:#eef3fc;white-space:pre-wrap;word-break:break-word}
+.empty{padding:22px 0;text-align:center;color:#9aa9b8;font-size:12.5px;border:1px dashed var(--line);border-radius:9px;background:#fbfdff}
+table.inner th{background:var(--blue-soft);color:var(--navy);font-weight:600;text-align:left;padding:6px 8px;border:1px solid var(--line)}
+table.inner td{padding:6px 8px;border:1px solid var(--line);vertical-align:top}
+table.inner td.mono{font-family:Consolas,monospace;font-size:11px;color:#3d4b5c}
+
+/* 对话 */
+#chat{min-height:46vh;max-height:60vh;overflow:auto;padding:6px 2px}
+.msg{margin:10px 0;display:flex}
+.msg .bub{max-width:84%;padding:9px 13px;border-radius:13px;background:#eef3fc;white-space:pre-wrap;word-break:break-word}
 .msg.me{justify-content:flex-end}
 .msg.me .bub{background:var(--blue);color:#fff}
-.msg.interject .bub{background:#fff7e6;border:1px dashed #f0c36d}
-.msg .who{font-size:11px;color:var(--muted);margin-bottom:2px}
+.msg.interject .bub{background:var(--warn-bg);border:1px dashed #f0c36d}
+.msg .who{font-size:11px;color:var(--muted);margin-bottom:3px}
 .sw{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
-@media (max-width:900px){main{grid-template-columns:1fr}}
+
+/* 弹层 */
+.overlay{position:fixed;inset:0;background:rgba(15,42,95,.42);display:flex;align-items:center;justify-content:center;z-index:50;padding:24px}
+.overlay.hidden{display:none}
+.panel{background:#fff;border-radius:16px;max-width:760px;width:100%;max-height:88vh;overflow:auto;box-shadow:0 20px 60px rgba(10,30,70,.28)}
+.panel .ph{padding:22px 26px 14px;border-bottom:1px solid var(--line)}
+.panel .ph h3{margin:0;font-size:19px;color:var(--navy)}
+.panel .ph p{margin:6px 0 0;color:var(--muted);font-size:13px}
+.panel .pb{padding:18px 26px}
+.panel .pf{padding:14px 26px 22px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--line)}
+.steps{display:grid;gap:12px}
+.step{display:flex;gap:12px;align-items:flex-start}
+.step .n{flex:0 0 26px;height:26px;border-radius:8px;background:var(--blue-soft);color:var(--navy);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
+.step .t b{color:var(--navy)}
+.step .t div{font-size:13px;color:var(--muted);margin-top:2px}
+.kv{display:grid;grid-template-columns:120px 1fr;gap:8px 14px;font-size:13px;margin-top:6px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;color:var(--ink)}
+code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+
+@media (max-width:980px){main{grid-template-columns:1fr}.topbar{padding:12px 16px}main{padding:14px 16px 24px}}
 </style></head>
 <body>
-<header><b>ye队作品</b><span>可验证的多 Agent 编排 · 控制台</span></header>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">ye</div>
+    <div>
+      <div class="title">ye队作品</div>
+      <div class="sub">可验证的多 Agent 编排 · 控制台</div>
+    </div>
+  </div>
+  <div class="top-actions">
+    <span class="pill">演示模式</span>
+    <button id="helpBtn" class="ghost">使用说明</button>
+  </div>
+</header>
 <main>
   <section class="card">
-    <h2>任务 <small id="taskCount">0 个</small></h2>
+    <h2>提交任务 <small id="taskCount">0 个</small></h2>
+    <p class="hint">填任务描述与测试用例，点提交。系统会让两个 Agent 分别生成与审查，任何一道门不过都会重来。</p>
     <div class="row"><input id="desc" type="text" placeholder="任务描述，例如：实现 add(a,b) 返回两数之和，支持负数与小数"></div>
     <div class="row"><input id="fname" type="text" value="add" style="max-width:140px">
       <input id="tests" type="text" style="flex:1" value='[[[1,2],3],[[-1,5],4],[[0.5,0.5],1]]'>
       <button id="run">提交</button></div>
     <div class="sugg-bar"><span class="sugg-label">下一步可能是</span><div id="suggests"></div><span id="suggStats" class="sugg-stat"></span></div>
     <div id="tasks"></div>
-    <h2 style="margin-top:14px">结构化决策记录 <small id="innerMeta">每轮一条</small></h2>
+    <div class="divider"></div>
+    <h2>结构化决策记录 <small id="innerMeta">每轮一条</small></h2>
+    <p class="hint">每轮一条：事实锁定由代码从契约抽取，避开开头是上一轮用过的，避免重复。</p>
     <div id="innerTable" class="inner-wrap"></div>
-    <h2 style="margin-top:14px">阶段事件 <small>最新的在下</small></h2>
+    <div class="divider"></div>
+    <h2>阶段事件 <small>最新的在下</small></h2>
+    <p class="hint">规划、生成、静态检查、测试、审查、裁决的完整流水，落库可回放。</p>
     <div class="events" id="events"></div>
   </section>
 
   <section class="card">
     <h2>对话 <small><label class="sw"><input type="checkbox" id="interject" checked> 主动插话</label></small></h2>
+    <p class="hint">问它「现在到哪一轮了」「为什么被驳回」，它会照实回答；勾选后它会自己汇报进度。</p>
     <div id="chat"></div>
     <div class="row"><input id="msg" type="text" placeholder="问状态 / 问为什么被驳回 / 随便聊"><button id="send">发送</button></div>
   </section>
 </main>
+<div id="onboard" class="overlay">
+  <div class="panel">
+    <div class="ph">
+      <h3>欢迎使用 ye队作品</h3>
+      <p>一个可验证的多 Agent 编排原型：Agent 说“做完了”不算数，过了两道独立的门才算数。</p>
+    </div>
+    <div class="pb">
+      <div class="steps">
+        <div class="step"><div class="n">1</div><div class="t"><b>提交一个任务</b>
+          <div>左边第一个输入框写任务描述，下面的测试用例保持默认即可，点「提交」。</div></div></div>
+        <div class="step"><div class="n">2</div><div class="t"><b>看它被驳回了两次</b>
+          <div>第 1 轮测试没过被驳回；第 2 轮<strong>测试全过，审查仍然驳回</strong>——这是本作品的重点。</div></div></div>
+        <div class="step"><div class="n">3</div><div class="t"><b>看它自己改好</b>
+          <div>第 3 轮两道门都通过，任务才算完成。全过程在下方事件流里可回放。</div></div></div>
+      </div>
+      <div class="divider"></div>
+      <dl class="kv">
+        <dt>下一步建议</dt><dd>任务区下方那几个按钮，点一下自动填表提交</dd>
+        <dt>决策记录</dt><dd>每轮一条，事实锁定由代码抽取，不是模型自述</dd>
+        <dt>对话</dt><dd>右边的对话框可以问它「为什么被驳回」</dd>
+      </dl>
+    </div>
+    <div class="pf">
+      <label class="sw"><input type="checkbox" id="noAgain"> 下次不再显示</label>
+      <button id="startBtn">开始使用</button>
+    </div>
+  </div>
+</div>
+
+<div id="help" class="overlay hidden">
+  <div class="panel">
+    <div class="ph">
+      <h3>使用说明</h3>
+      <p>三分钟看懂这个原型在做什么，以及怎么验证它。</p>
+    </div>
+    <div class="pb">
+      <h4 style="margin:0 0 8px;font-size:14px;color:#0f2a5f">界面分区</h4>
+      <dl class="kv">
+        <dt>任务区</dt><dd>填写任务描述、函数名、测试用例（JSON 数组），点提交</dd>
+        <dt>下一步建议</dt><dd>根据上一轮结果给出可点选项，点一下自动提交，也可自己手打</dd>
+        <dt>任务列表</dt><dd>每个任务的状态徽章显示「成功 / 失败 / 中断」和轮次</dd>
+        <dt>结构化决策记录</dt><dd>每轮的事实锁定、要避开的开头、配图语音开关、上下文用量</dd>
+        <dt>阶段事件</dt><dd>规划、生成、静态检查、测试、审查、裁决的完整流水</dd>
+        <dt>对话区</dt><dd>可以问状态、问为什么被驳回；勾选「主动插话」后它会自己汇报</dd>
+      </dl>
+      <div class="divider"></div>
+      <h4 style="margin:0 0 8px;font-size:14px;color:#0f2a5f">怎么判断它没在糊弄你</h4>
+      <div class="steps">
+        <div class="step"><div class="n">A</div><div class="t"><b>看第 2 轮</b>
+          <div>测试 3/3 全过，审查仍然驳回，理由是「没处理小数」。如果只有测试，这一轮会被误判成功。</div></div></div>
+        <div class="step"><div class="n">B</div><div class="t"><b>看决策记录的事实锁定列</b>
+          <div>那些数字是从任务契约里用代码抽出来的，不是模型自己说的。</div></div></div>
+        <div class="step"><div class="n">C</div><div class="t"><b>看事件流</b>
+          <div>每一步都写了库，失败也能回答「卡在哪一轮、为什么」。</div></div></div>
+      </div>
+      <div class="divider"></div>
+      <h4 style="margin:0 0 8px;font-size:14px;color:#0f2a5f">命令行</h4>
+      <div style="font-size:13px;color:#3d4b5c;line-height:2">
+        <code>python -m tidal_harness demo</code> 跑一遍三轮<br>
+        <code>python -m tidal_harness serve --demo</code> 打开本控制台<br>
+        <code>python -m tidal_harness run --contract 契约.json</code> 跑真实任务
+      </div>
+    </div>
+    <div class="pf"><button id="helpClose">知道了</button></div>
+  </div>
+</div>
 <script>
 const $ = s => document.querySelector(s);
+// ---- 弹层控制 ----
+(function(){
+  const ob = $('#onboard'), hp = $('#help');
+  const seen = localStorage.getItem('ye-onboard') === '1';
+  if (seen) ob.classList.add('hidden');
+  $('#startBtn').onclick = () => {
+    if ($('#noAgain').checked) localStorage.setItem('ye-onboard','1');
+    ob.classList.add('hidden');
+  };
+  $('#helpBtn').onclick = () => hp.classList.remove('hidden');
+  $('#helpClose').onclick = () => hp.classList.add('hidden');
+  hp.onclick = (e) => { if (e.target === hp) hp.classList.add('hidden'); };
+  ob.onclick = (e) => { if (e.target === ob) ob.classList.add('hidden'); };
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { hp.classList.add('hidden'); }
+  });
+})();
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function addMsg(m){
   if (m.kind === 'interject' && !$('#interject').checked) return;
@@ -312,7 +461,7 @@ async function loadInner(id){
     const r = await fetch('/api/tasks/' + encodeURIComponent(id));
     const d = await r.json();
     const rows = (d.events || []).filter(e => e.stage === 'inner');
-    if (!rows.length) { $('#innerTable').innerHTML = '<div style="color:#5b6b7a;font-size:12px">还没有记录</div>'; return; }
+    if (!rows.length) { $('#innerTable').innerHTML = '<div class="empty">还没有记录。跑一个任务，这里会按轮次显示事实锁定、避开的开头与上下文用量。</div>'; return; }
     let html = '<table class="inner"><tr><th>轮次</th><th>事实锁定</th><th>避开开头</th><th>配图/语音</th><th>上下文</th></tr>';
     rows.forEach(e => {
       let p = {}; try { p = JSON.parse(e.payload || '{}'); } catch (_) {}
@@ -369,15 +518,17 @@ async function loadTasks(){
   $('#taskCount').textContent = d.tasks.length + ' 个';
   $('#tasks').innerHTML = d.tasks.map(t => {
     const cls = t.status === 'succeeded' ? 'ok' : (t.status === 'failed' ? 'fail' : '');
-    return '<div class="task" data-id="' + t.task_id + '"><div class="top"><b>' + esc(t.task_id) +
+    const title = (t.title || '').slice(0, 60) || (t.task_id || '');
+    return '<div class="task" data-id="' + t.task_id + '"><div class="top"><b>' + esc(title) +
       '</b><span class="badge ' + cls + '">' + esc(t.status) + ' · ' + t.rounds + ' 轮</span></div></div>';
   }).join('') || '<div style="color:#5b6b7a;font-size:12.5px">还没有任务</div>';
 }
 async function loadEvents(id){
   if (!id) return;
   const r = await fetch('/api/tasks/' + encodeURIComponent(id)); const d = await r.json();
-  $('#events').innerHTML = (d.events || []).map(e =>
+  const html = (d.events || []).map(e =>
     '<div>#' + e.seq + ' ' + esc(e.stage) + ' ' + esc((e.payload || '').slice(0, 120)) + '</div>').join('');
+  $('#events').innerHTML = html || '<div class="empty">还没有事件。提交一个任务后，这里会显示规划、生成、检查、审查的完整流水。</div>';
 }
 $('#run').onclick = async () => {
   const body = {description: $('#desc').value || '实现 add(a,b)',
