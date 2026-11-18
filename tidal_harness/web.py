@@ -319,6 +319,49 @@ table.inner td.mono{font-family:Consolas,monospace;font-size:11px;color:#3d4b5c}
 code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
 
 @media (max-width:980px){main{grid-template-columns:1fr}.topbar{padding:12px 16px}main{padding:14px 16px 24px}}
+
+/* 开始页：白底 + 水流 */
+#landing{position:fixed;inset:0;z-index:80;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
+#landing.hidden{display:none}
+.waves{position:absolute;inset:0;overflow:hidden}
+.waves span{position:absolute;left:-50%;width:200%;height:42%;bottom:-12%;border-radius:45%;opacity:.5;filter:blur(2px)}
+.waves span:nth-child(1){background:linear-gradient(90deg,#dbeafe,#bfdbfe);animation:spin 26s linear infinite}
+.waves span:nth-child(2){background:linear-gradient(90deg,#e0f2fe,#c7e6fb);animation:spin 34s linear infinite reverse;bottom:-18%}
+.waves span:nth-child(3){background:linear-gradient(90deg,#eef6ff,#dbeafe);animation:spin 46s linear infinite;bottom:-24%}
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+.landing-inner{position:relative;z-index:2;text-align:center;padding:0 24px;max-width:720px}
+.landing-inner h1{font-size:34px;color:#0f2a5f;margin:0 0 10px;letter-spacing:.5px}
+.landing-inner .tag{font-size:15px;color:#4b5f75;margin:0 0 6px}
+.landing-inner .quote{font-size:14px;color:#61707f;margin:0 0 34px}
+.landing-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.landing-actions button{padding:12px 26px;font-size:15px;border-radius:10px}
+.landing-actions .ghost{padding:12px 22px}
+.landing-ver{position:absolute;bottom:22px;left:0;right:0;text-align:center;font-size:12px;color:#9aa9b8;z-index:2}
+
+/* 统计条 */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0 4px}
+.stat{background:#f8fbff;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.stat b{display:block;font-size:18px;color:var(--navy);line-height:1.2}
+.stat span{font-size:11.5px;color:var(--muted)}
+
+/* 模式切换 */
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:#f6f9fe}
+.seg button{padding:5px 14px;border-radius:0;background:transparent;color:var(--muted);font-weight:500;font-size:12.5px}
+.seg button.on{background:var(--blue);color:#fff}
+
+/* 思考链路 */
+.chain{display:flex;flex-direction:column;gap:0;margin-top:4px}
+.node{display:flex;gap:10px;padding:6px 0}
+.node .dot{flex:0 0 18px;height:18px;border-radius:50%;background:#e8eefb;color:#4a5c74;font-size:11px;display:flex;align-items:center;justify-content:center;margin-top:2px}
+.node.ok .dot{background:var(--ok-bg);color:var(--ok)}
+.node.bad .dot{background:var(--fail-bg);color:var(--fail)}
+.node .body b{font-size:12.5px;color:var(--navy)}
+.node .body div{font-size:12px;color:var(--muted)}
+.node .line{flex:0 0 1px;background:var(--line);margin-left:9px}
+
+/* 大输入框 */
+#desc{min-height:92px;font-size:14px;line-height:1.7}
+
 </style></head>
 <body>
 <header class="topbar">
@@ -336,14 +379,30 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
 </header>
 <main>
   <section class="card">
-    <h2>提交任务 <small id="taskCount">0 个</small></h2>
-    <p class="hint">填任务描述与测试用例，点提交。系统会让两个 Agent 分别生成与审查，任何一道门不过都会重来。</p>
-    <div class="row"><input id="desc" type="text" placeholder="任务描述，例如：实现 add(a,b) 返回两数之和，支持负数与小数"></div>
-    <div class="row"><input id="fname" type="text" value="add" style="max-width:140px">
-      <input id="tests" type="text" style="flex:1" value='[[[1,2],3],[[-1,5],4],[[0.5,0.5],1]]'>
-      <button id="run">提交</button></div>
+    <h2>任务 <small id="taskCount">0 个</small></h2>
+    <p class="hint">把要做的事写清楚，剩下的交给系统：它自己规划、生成、检查、修正。默认会跑内置的加法示例。</p>
+    <textarea id="desc" placeholder="例如：实现 add(a,b) 返回两数之和，支持负数与小数">实现 add(a,b) 返回两数之和，支持负数与小数</textarea>
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <div class="seg" id="modeSwitch">
+        <button data-mode="auto" class="on">全自动</button>
+        <button data-mode="manual">人工确认</button>
+      </div>
+      <button id="run">开始执行</button>
+    </div>
+    <input id="fname" type="hidden" value="add">
+    <input id="tests" type="hidden" value='[[[1,2],3],[[-1,5],4],[[0.5,0.5],1]]'>
+    <div class="stats">
+      <div class="stat"><b id="statRounds">—</b><span>平均轮次</span></div>
+      <div class="stat"><b id="statCache">—</b><span>缓存命中</span></div>
+      <div class="stat"><b id="statSugg">—</b><span>建议命中率</span></div>
+      <div class="stat"><b id="statFacts">—</b><span>锁定事实</span></div>
+    </div>
     <div class="sugg-bar"><span class="sugg-label">下一步可能是</span><div id="suggests"></div><span id="suggStats" class="sugg-stat"></span></div>
     <div id="tasks"></div>
+    <div class="divider"></div>
+    <h2>思考链路 <small id="chainMeta">最近一个任务</small></h2>
+    <p class="hint">规划 → 生成 → 静态检查 → 测试 → 审查 → 裁决，一道一道过。</p>
+    <div class="chain" id="chain"><div class="empty">提交任务后，这里会显示它每一步在想什么、卡在哪。</div></div>
     <div class="divider"></div>
     <h2>结构化决策记录 <small id="innerMeta">每轮一条</small></h2>
     <p class="hint">每轮一条：事实锁定由代码从契约抽取，避开开头是上一轮用过的，避免重复。</p>
@@ -361,35 +420,6 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
     <div class="row"><input id="msg" type="text" placeholder="问状态 / 问为什么被驳回 / 随便聊"><button id="send">发送</button></div>
   </section>
 </main>
-<div id="onboard" class="overlay">
-  <div class="panel">
-    <div class="ph">
-      <h3>欢迎使用 ye队作品</h3>
-      <p>一个可验证的多 Agent 编排原型：Agent 说“做完了”不算数，过了两道独立的门才算数。</p>
-    </div>
-    <div class="pb">
-      <div class="steps">
-        <div class="step"><div class="n">1</div><div class="t"><b>提交一个任务</b>
-          <div>左边第一个输入框写任务描述，下面的测试用例保持默认即可，点「提交」。</div></div></div>
-        <div class="step"><div class="n">2</div><div class="t"><b>看它被驳回了两次</b>
-          <div>第 1 轮测试没过被驳回；第 2 轮<strong>测试全过，审查仍然驳回</strong>——这是本作品的重点。</div></div></div>
-        <div class="step"><div class="n">3</div><div class="t"><b>看它自己改好</b>
-          <div>第 3 轮两道门都通过，任务才算完成。全过程在下方事件流里可回放。</div></div></div>
-      </div>
-      <div class="divider"></div>
-      <dl class="kv">
-        <dt>下一步建议</dt><dd>任务区下方那几个按钮，点一下自动填表提交</dd>
-        <dt>决策记录</dt><dd>每轮一条，事实锁定由代码抽取，不是模型自述</dd>
-        <dt>对话</dt><dd>右边的对话框可以问它「为什么被驳回」</dd>
-      </dl>
-    </div>
-    <div class="pf">
-      <label class="sw"><input type="checkbox" id="noAgain"> 下次不再显示</label>
-      <button id="startBtn">开始使用</button>
-    </div>
-  </div>
-</div>
-
 <div id="help" class="overlay hidden">
   <div class="panel">
     <div class="ph">
@@ -427,21 +457,48 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
     <div class="pf"><button id="helpClose">知道了</button></div>
   </div>
 </div>
+
+<div id="landing">
+  <div class="waves"><span></span><span></span><span></span></div>
+  <div class="landing-inner">
+    <h1>ye队作品</h1>
+    <p class="tag">可验证的多 Agent 编排</p>
+    <p class="quote">Agent 说“做完了”不算数，过了两道独立的门才算数。</p>
+    <div class="landing-actions">
+      <button id="enterDemo">进入演示</button>
+      <button id="enterKey" class="ghost">用我的 API Key</button>
+    </div>
+  </div>
+  <div class="landing-ver" id="verLine">v1.0 · 测试版</div>
+</div>
+
+<div id="apikey" class="overlay hidden">
+  <div class="panel" style="max-width:560px">
+    <div class="ph">
+      <h3>接入你自己的模型</h3>
+      <p>填完点保存，任务就会用你的模型跑。不填也能用内置演示模式。</p>
+    </div>
+    <div class="pb">
+      <div class="row"><input id="kBase" type="text" placeholder="接口地址，例如 https://api.deepseek.com/v1"></div>
+      <div class="row"><input id="kKey" type="text" placeholder="API Key（只保存在本机浏览器）"></div>
+      <div class="row"><input id="kModel" type="text" placeholder="模型名，例如 deepseek-chat"></div>
+      <p class="hint" style="margin-top:10px">会发送到本机后端使用，不会写进仓库或日志；日志落盘前已做脱敏。</p>
+    </div>
+    <div class="pf">
+      <button id="keyCancel" class="ghost">取消</button>
+      <button id="keySave">保存并使用</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = s => document.querySelector(s);
 // ---- 弹层控制 ----
 (function(){
-  const ob = $('#onboard'), hp = $('#help');
-  // 每次启动都显示开始页（演示场景需要确定性，不依赖浏览器存储）
-  ob.classList.remove('hidden');
-  $('#startBtn').onclick = () => {
-    try { if ($('#noAgain').checked) localStorage.setItem('ye-onboard','1'); } catch (e) {}
-    ob.classList.add('hidden');
-  };
+  const hp = $('#help');
   $('#helpBtn').onclick = () => hp.classList.remove('hidden');
   $('#helpClose').onclick = () => hp.classList.add('hidden');
   hp.onclick = (e) => { if (e.target === hp) hp.classList.add('hidden'); };
-  ob.onclick = (e) => { if (e.target === ob) ob.classList.add('hidden'); };
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hp.classList.add('hidden'); });
 })();
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
@@ -553,6 +610,115 @@ es.onmessage = ev => {
   if (d.type === 'task' || d.type === 'task-update') { loadTasks(); loadEvents(d.task_id); loadSuggestions(); loadInner(d.task_id); loadMetrics(); }
 };
 loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').then(r=>r.json()).then(d => { if (d.tasks[0]) { loadEvents(d.tasks[0].task_id); loadInner(d.tasks[0].task_id); } });
+
+// ================= 新版交互 =================
+(function(){
+  let manual = false;
+  const $id = (x) => document.getElementById(x);
+
+  // 开始页
+  const land = $id('landing');
+  $id('enterDemo').onclick = () => land.classList.add('hidden');
+  $id('enterKey').onclick = () => { land.classList.add('hidden'); $id('apikey').classList.remove('hidden'); };
+  $id('keyCancel').onclick = () => $id('apikey').classList.add('hidden');
+  $id('keySave').onclick = async () => {
+    const base = $id('kBase').value.trim(), key = $id('kKey').value.trim(), model = $id('kModel').value.trim();
+    if (!base || !key) { alert('接口地址和 Key 都要填'); return; }
+    try {
+      const r = await fetch('/api/config', {method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({base, key, model})});
+      const d = await r.json();
+      if (d.ok) { $id('apikey').classList.add('hidden'); alert('已保存，接下来的任务会用你的模型跑。'); }
+      else alert('保存失败：' + (d.error || '未知错误'));
+    } catch (e) { alert('保存失败：' + e.message); }
+  };
+
+  // 模式切换
+  document.querySelectorAll('#modeSwitch button').forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll('#modeSwitch button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      manual = b.dataset.mode === 'manual';
+      appendSys(manual ? '已切换为「人工确认」：每次执行前我会先问你。' : '已切换为「全自动」：我会直接把任务跑完。');
+    };
+  });
+  function appendSys(text){
+    const chat = $id('chat');
+    const div = document.createElement('div');
+    div.className = 'msg';
+    div.innerHTML = '<div><div class="who">系统</div><div class="bub">' + text.replace(/[<>&]/g, '') + '</div></div>';
+    chat.appendChild(div); chat.scrollTop = chat.scrollHeight;
+  }
+
+  // 执行前确认（人工模式）
+  const origRun = $id('run').onclick;
+  $id('run').onclick = async () => {
+    const desc = ($id('desc').value || '').trim().slice(0, 60);
+    if (manual && !confirm('人工确认：现在开始执行这个任务吗？\n\n' + desc)) return;
+    return origRun();
+  };
+  const origUse = window.useSuggestion;
+  window.useSuggestion = async (s) => {
+    if (manual && !confirm('人工确认：要执行「' + s.label + '」吗？')) return;
+    return origUse(s);
+  };
+
+  // 统计条
+  async function refreshStats(){
+    try {
+      const d = await (await fetch('/api/metrics')).json();
+      $id('statRounds').textContent = (d.avgRounds != null ? d.avgRounds : '—');
+      $id('statCache').textContent = (d.cacheHitRate != null ? Math.round(d.cacheHitRate * 100) + '%' : '—');
+      const st = d.suggest || {};
+      $id('statSugg').textContent = st.shown ? (Math.round((st.rate || 0) * 100) + '%') : '—';
+      $id('statFacts').textContent = (d.facts != null ? d.facts : '—');
+    } catch (e) {}
+  }
+  setInterval(refreshStats, 4000); refreshStats();
+
+  // 思考链路
+  const LABEL = {
+    queued:'任务入队', plan:'规划：拆步骤与验收标准', do:'生成候选代码',
+    inner:'记录本轮约束', 'check-static':'静态检查（AST 白名单）',
+    'check-tests':'确定性测试', 'check-review':'独立审查', act:'裁决'
+  };
+  function nodeClass(e){
+    const p = safe(e.payload);
+    if (e.stage === 'act') return p.result === 'accepted' ? 'ok' : 'bad';
+    if (e.stage === 'check-tests' || e.stage === 'check-static' || e.stage === 'check-review')
+      return p.ok === false ? 'bad' : (p.ok === true ? 'ok' : '');
+    return '';
+  }
+  function nodeText(e){
+    const p = safe(e.payload);
+    if (e.stage === 'check-tests') return p.ok ? (p.passed + '/' + p.total + ' 通过') : (p.passed + '/' + p.total + ' 未通过');
+    if (e.stage === 'check-review') return p.ok ? '审查通过' : ('驳回：' + ((p.issues || [])[0] || ''));
+    if (e.stage === 'check-static') return p.ok ? '通过' : ('问题：' + ((p.issues || [])[0] || ''));
+    if (e.stage === 'act') return p.result === 'accepted' ? '接受，写入缓存' : '打回，带意见重来';
+    if (e.stage === 'do') return '第 ' + (p.round || '?') + ' 轮';
+    if (e.stage === 'inner') return '锁定 ' + ((p.facts_locked || []).length) + ' 项事实';
+    return '';
+  }
+  function safe(x){ try { return JSON.parse(x || '{}'); } catch (e) { return {}; } }
+  async function loadChain(id){
+    if (!id) return;
+    try {
+      const d = await (await fetch('/api/tasks/' + encodeURIComponent(id))).json();
+      const rows = (d.events || []).filter(e => LABEL[e.stage]);
+      const box = $id('chain');
+      if (!rows.length) { box.innerHTML = '<div class="empty">提交任务后，这里会显示它每一步在想什么、卡在哪。</div>'; return; }
+      box.innerHTML = rows.map(e => {
+        const cls = nodeClass(e), t = nodeText(e);
+        return '<div class="node ' + cls + '"><div class="dot">' + (cls === 'ok' ? '✓' : cls === 'bad' ? '!' : '·') + '</div>' +
+          '<div class="body"><b>' + LABEL[e.stage] + '</b>' + (t ? '<div>' + t + '</div>' : '') + '</div></div>';
+      }).join('');
+    } catch (e) {}
+  }
+  const origLoadEvents = window.loadEvents;
+  window.loadEvents = async (id) => { if (origLoadEvents) await origLoadEvents(id); loadChain(id); };
+  fetch('/api/tasks').then(r => r.json()).then(d => { if (d.tasks && d.tasks[0]) loadChain(d.tasks[0].task_id); });
+})();
+
 </script></body></html>"""
 
 
@@ -589,9 +755,19 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
             if path in ("/", "/index.html"):
                 return self._send(200, HTML.encode("utf-8"), "text/html; charset=utf-8")
             if path == "/api/chat":
-                return self._json({"messages": chat.recent()})
+                return self._json({"messages": chat.recent(200)})
             if path == "/api/tasks":
-                return self._json({"tasks": engine.store.tasks()})
+                return self._json({"tasks": engine.store.tasks(50)})
+            if path.startswith("/api/tasks/"):
+                tid = path.rsplit("/", 1)[-1]
+                task = engine.store.task(tid)
+                if not task:
+                    return self._json({"error": "not found"}, 404)
+                return self._json({"task": task, "events": engine.store.events(tid)})
+            if path == "/api/chat":
+                return self._json({"messages": chat.recent(200)})
+            if path == "/api/tasks":
+                return self._json({"tasks": engine.store.tasks(50)})
             if path.startswith("/api/tasks/"):
                 tid = path.rsplit("/", 1)[-1]
                 task = engine.store.task(tid)
@@ -622,7 +798,20 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
                                 facts += len((json.loads(e["payload"] or "{}")).get("facts_locked") or [])
                             except Exception:
                                 pass
-                return self._json({"repeat": rr, "tasks": len(tasks), "inner": inner_count, "facts": facts})
+                cache_hits = 0
+                rounds = []
+                for t in tasks:
+                    rounds.append(t.get("rounds") or 0)
+                    detail = t.get("detail") or ""
+                    if "fromCache" in str(detail):
+                        cache_hits += 1
+                avg_rounds = round(sum(rounds) / len(rounds), 1) if rounds else 0
+                return self._json({
+                    "repeat": rr, "tasks": len(tasks), "inner": inner_count, "facts": facts,
+                    "avgRounds": avg_rounds,
+                    "cacheHitRate": (cache_hits / len(tasks)) if tasks else 0.0,
+                    "suggest": chat.suggestion_stats(),
+                })
             if path == "/api/suggest":
                 tasks = engine.store.tasks(1)
                 last = tasks[0] if tasks else None
@@ -640,6 +829,25 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
 
         def do_POST(self):  # noqa: N802
             path = self.path.split("?")[0]
+            if path == "/api/config" and self.command == "POST":
+                length = int(self.headers.get("content-length") or 0)
+                raw = self.rfile.read(length) or b"{}"
+                try:
+                    cfg = json.loads(raw.decode("utf-8"))
+                except Exception:
+                    return self._json({"ok": False, "error": "bad json"}, 400)
+                base = (cfg.get("base") or "").strip()
+                key = (cfg.get("key") or "").strip()
+                model = (cfg.get("model") or "deepseek-chat").strip()
+                if not base or not key:
+                    return self._json({"ok": False, "error": "base 和 key 必填"}, 400)
+                try:
+                    from .runtime import OpenAICompatibleModel
+                    engine.model = OpenAICompatibleModel(base, key, model)
+                    brain.demo = False
+                    return self._json({"ok": True, "model": model})
+                except Exception as exc:
+                    return self._json({"ok": False, "error": str(exc)}, 500)
             if path == "/api/chat":
                 data = self._body()
                 text = str(data.get("text", ""))[:1000]

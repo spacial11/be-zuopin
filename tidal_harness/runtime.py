@@ -12,6 +12,7 @@ import json
 import re
 import os
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -318,6 +319,7 @@ class Store:
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         self.conn = sqlite3.connect(path, check_same_thread=False)
+        self._db_lock = threading.Lock()
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -342,22 +344,25 @@ class Store:
         self.conn.commit()
 
     def task(self, task_id: str) -> dict | None:
-        row = self.conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        with self._db_lock:
+            row = self.conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         return dict(row) if row else None
 
     def tasks(self, limit: int = 50) -> list[dict]:
-        rows = self.conn.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        with self._db_lock:
+            rows = self.conn.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
     # ---- 事件 ----
     def event(self, task_id: str, stage: str, payload: Any = None) -> int:
-        seq = self._next_seq(task_id)
-        self.conn.execute(
-            "INSERT INTO events(task_id,seq,stage,at,payload) VALUES(?,?,?,?,?)",
-            (task_id, seq, stage, time.time(),
-             json.dumps(_redact(payload), ensure_ascii=False) if payload is not None else None),
-        )
-        self.conn.commit()
+        with self._db_lock:
+            seq = self._next_seq(task_id)
+            self.conn.execute(
+                "INSERT INTO events(task_id,seq,stage,at,payload) VALUES(?,?,?,?,?)",
+                (task_id, seq, stage, time.time(),
+                 json.dumps(_redact(payload), ensure_ascii=False) if payload is not None else None),
+            )
+            self.conn.commit()
         return seq
 
     def _next_seq(self, task_id: str) -> int:
@@ -369,7 +374,8 @@ class Store:
         return self._seq[task_id]
 
     def events(self, task_id: str) -> list[dict]:
-        rows = self.conn.execute("SELECT * FROM events WHERE task_id=? ORDER BY seq", (task_id,)).fetchall()
+        with self._db_lock:
+            rows = self.conn.execute("SELECT * FROM events WHERE task_id=? ORDER BY seq", (task_id,)).fetchall()
         return [dict(r) for r in rows]
 
     def mark_interrupted(self) -> int:
