@@ -1,4 +1,4 @@
-# Tidal Harness · Hope of Light
+# Tidal Harness · ye队作品
 
 可验证的**多 Agent 编排**原型：裁决标准不是"答得像"，而是**两道门都通过**。
 

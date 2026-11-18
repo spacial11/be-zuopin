@@ -158,7 +158,7 @@ class ChatBrain:
             tasks = self.engine.store.tasks(3)
             ctx = "；".join(f"{x['task_id']}={x['status']}" for x in tasks) or "暂无任务"
             out = m.complete([
-                {"role": "system", "content": "你是 Hope of Light 面板里的助手。回答简短、具体，"
+                {"role": "system", "content": "你是 ye队作品 面板里的助手。回答简短、具体，"
                                               "不要客服腔。可以引用任务状态。"},
                 {"role": "user", "content": f"当前任务：{ctx}\n\n用户说：{t}"},
             ], role="reviewer", contract=None)
@@ -226,7 +226,7 @@ def interjection_for(stage: str, payload: dict, task_id: str) -> str:
 HTML = r"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hope of Light · 控制台</title>
+<title>ye队作品 · 控制台</title>
 <style>
 :root{--blue:#1d4ed8;--dark:#122e7a;--ink:#1a1a1a;--muted:#5b6b7a;--line:#dde6f2;--bg:#f5f8fd}
 *{box-sizing:border-box}
@@ -273,7 +273,7 @@ table.inner td.mono{font-family:Consolas,monospace;font-size:11px;color:#445}
 @media (max-width:900px){main{grid-template-columns:1fr}}
 </style></head>
 <body>
-<header><b>Hope of Light</b><span>可验证的多 Agent 编排 · 控制台</span></header>
+<header><b>ye队作品</b><span>可验证的多 Agent 编排 · 控制台</span></header>
 <main>
   <section class="card">
     <h2>任务 <small id="taskCount">0 个</small></h2>
@@ -302,7 +302,7 @@ function addMsg(m){
   if (m.kind === 'interject' && !$('#interject').checked) return;
   const el = document.createElement('div');
   el.className = 'msg ' + (m.role === 'user' ? 'me' : '') + (m.kind === 'interject' ? ' interject' : '');
-  el.innerHTML = '<div><div class="who">' + (m.role === 'user' ? '我' : (m.kind === 'interject' ? 'Hope（主动插话）' : 'Hope')) +
+  el.innerHTML = '<div><div class="who">' + (m.role === 'user' ? '我' : (m.kind === 'interject' ? '助手（主动插话）' : '助手')) +
     '</div><div class="bub">' + esc(m.text) + '</div></div>';
   $('#chat').appendChild(el); $('#chat').scrollTop = 1e9;
 }
