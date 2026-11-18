@@ -432,19 +432,17 @@ const $ = s => document.querySelector(s);
 // ---- 弹层控制 ----
 (function(){
   const ob = $('#onboard'), hp = $('#help');
-  const seen = localStorage.getItem('ye-onboard') === '1';
-  if (seen) ob.classList.add('hidden');
+  // 每次启动都显示开始页（演示场景需要确定性，不依赖浏览器存储）
+  ob.classList.remove('hidden');
   $('#startBtn').onclick = () => {
-    if ($('#noAgain').checked) localStorage.setItem('ye-onboard','1');
+    try { if ($('#noAgain').checked) localStorage.setItem('ye-onboard','1'); } catch (e) {}
     ob.classList.add('hidden');
   };
   $('#helpBtn').onclick = () => hp.classList.remove('hidden');
   $('#helpClose').onclick = () => hp.classList.add('hidden');
   hp.onclick = (e) => { if (e.target === hp) hp.classList.add('hidden'); };
   ob.onclick = (e) => { if (e.target === ob) ob.classList.add('hidden'); };
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { hp.classList.add('hidden'); }
-  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hp.classList.add('hidden'); });
 })();
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function addMsg(m){
