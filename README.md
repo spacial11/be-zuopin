@@ -1,6 +1,10 @@
 # be队作品 · 可验证的多 Agent 编排
 
-第五届“未来杯”创新大赛赛题一，be队。这个原型为小型 Python 纯函数任务串联规划、编码、测试和审查。每轮公开测试、独立审查、候选实现和裁决可在本地面板回放。
+第五届“未来杯”创新大赛赛题一，参赛队名为 be。这个原型为小型 Python 纯函数任务串联规划、编码、测试和审查。每轮公开测试、独立审查、候选实现和裁决可在本地面板回放。
+
+## 项目创作分工
+
+AI 提出了项目方向，并编写了整体框架。参赛者马君逸负责调试，并对代码做了少量修改。
 
 ## 本机复现
 
@@ -41,7 +45,7 @@ python -m tidal_harness serve --demo
 
 Web 接口 POST /api/tasks 接收 description、function_name 和 tests，支持可选的 priority（0–9，数字越小优先级越高）、max_rounds 和 task_id。默认两个工作线程，最多 64 个任务等待，优先级相同按入队顺序处理。POST 成功返回 202 和任务 ID，GET /api/tasks/{任务ID} 返回终态与逐轮事件。离线面板每次重新运行示例，以保留每一轮可回放的数据。
 
-公开项目仓库为 https://github.com/spacial11/be-zuopin 。随包源码包含本次交付新加的 DeepSeek 评审入口。项目自编源码使用本目录的 MIT 许可证。演示包内 CPython 与 Windows 运行组件分别沿用各自许可证。
+公开项目仓库为 https://github.com/spacial11/be-zuopin 。随包源码包含本次交付新加的 DeepSeek 评审入口。项目源码使用本目录的 MIT 许可证。演示包内 CPython 与 Windows 运行组件分别沿用各自许可证。
 
 ## 历史版本
 
