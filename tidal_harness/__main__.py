@@ -16,11 +16,13 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .contract import AgentRegistry, ContractError, TaskContract, TestCase
 from .engine import Engine
-from .runtime import CandidateCache, ScriptedDemoModel, Store
+from .runtime import CandidateCache, OpenAICompatibleModel, ScriptedDemoModel, Store
 
 DATA_DIR = os.environ.get("TIDAL_DATA", os.path.join(os.getcwd(), "data"))
 
@@ -83,24 +85,29 @@ def indent(text: str, pad: str) -> str:
 
 
 def cmd_run(args) -> int:
-    with open(args.file, encoding="utf-8") as f:
+    with open(args.file, encoding="utf-8-sig") as f:
         data = json.load(f)
-    tests = tuple(TestCase(tuple(t["args"]), t["expected"]) for t in data["tests"])
-    c = TaskContract(
-        task_id=data.get("task_id", f"task-{int(time.time())}"),
-        description=data["description"],
-        function_name=data["function_name"],
-        tests=tests,
-        max_rounds=int(data.get("max_rounds", 3)),
-        context_budget_tokens=int(data.get("context_budget_tokens", 2000)),
-        deadline_seconds=float(data.get("deadline_seconds", 120)),
-        tenant=data.get("tenant", "default"),
-        model=data.get("model", "scripted"),
-    )
+    try:
+        c = TaskContract.from_data(data, task_id=data.get("task_id") or f"task-{uuid.uuid4().hex[:16]}")
+    except (TypeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     engine = build_engine(args.script)
+    base_url = os.environ.get("TIDAL_MODEL_BASE")
+    if base_url:
+        model = os.environ.get("TIDAL_MODEL_NAME") or "deepseek-chat"
+        engine.model = OpenAICompatibleModel(base_url, os.environ.get("TIDAL_MODEL_KEY", ""), model)
+    elif c.is_add_demo:
+        model = "scripted"
+    else:
+        print("自定义任务需要在线模型。请在控制台选择在线模式，或配置 TIDAL_MODEL_BASE、TIDAL_MODEL_KEY 和 TIDAL_MODEL_NAME。", file=sys.stderr)
+        return 2
+    c = replace(c, tenant=data.get("tenant", "default"), model=model)
     result = engine.run(c)
-    print(json.dumps({"task_id": c.task_id, "status": result.status,
-                      "rounds": len(result.rounds), "ok": result.ok}, ensure_ascii=False))
+    summary = {"task_id": c.task_id, "status": result.status, "rounds": len(result.rounds), "ok": result.ok}
+    if result.ok and result.rounds:
+        summary["code"] = result.rounds[-1].code
+    print(json.dumps(summary, ensure_ascii=False))
     return 0 if result.ok else 1
 
 
@@ -151,14 +158,7 @@ def make_handler(engine: Engine):
             n = int(self.headers.get("content-length", 0))
             try:
                 data = json.loads(self.rfile.read(n) or b"{}")
-                tests = tuple(TestCase(tuple(t["args"]), t["expected"]) for t in data["tests"])
-                c = TaskContract(
-                    task_id=data.get("task_id", f"http-{int(time.time()*1000)}"),
-                    description=data["description"],
-                    function_name=data["function_name"],
-                    tests=tests,
-                )
-                c.validate()
+                c = TaskContract.from_data(data, task_id=data.get("task_id") or f"http-{uuid.uuid4().hex[:16]}")
             except Exception as e:  # noqa: BLE001
                 return self._send(400, json.dumps({"error": str(e)}, ensure_ascii=False).encode())
             threading.Thread(target=engine.run, args=(c,), daemon=True).start()

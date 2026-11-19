@@ -121,12 +121,14 @@ class ChatBrain:
         t = text.strip()
         if not t:
             return "你说什么？我这边没收到内容。"
+        recorded = self._recorded_reply(t)
+        if recorded is not None:
+            return recorded
         if self.demo:
             return self._demo_reply(t)
         return self._model_reply(t)
 
-    def _demo_reply(self, t: str) -> str:
-        lower = t.lower()
+    def _recorded_reply(self, t: str) -> str | None:
         if any(k in t for k in ("状态", "怎么样", "进度", "跑到哪")):
             tasks = self.engine.store.tasks(1)
             if not tasks:
@@ -137,17 +139,26 @@ class ChatBrain:
             return (f"最近一个任务是 {task['task_id']}，状态 {task['status']}，"
                     f"已经走到第 {task['rounds']} 轮"
                     + (f"，最后一步是 {last['stage']}。" if last else "。"))
-        if any(k in t for k in ("为什么", "驳回", "审查")):
-            events = self.engine.store.tasks(1)
-            if events:
-                evs = self.engine.store.events(events[0]["task_id"])
-                for e in reversed(evs):
-                    if e["stage"] == "check-review":
-                        payload = json.loads(e["payload"] or "{}")
-                        if payload.get("ok") is False:
-                            return "审查那一轮我给了驳回：" + "；".join(payload.get("issues") or [])
-                        return "最近这轮审查是通过的，没提问题。"
-            return "还没跑过需要审查的任务。"
+        if any(k in t for k in ("驳回", "被打回", "审查意见", "卡在哪", "失败的测试", "为什么失败")):
+            tasks = self.engine.store.tasks(1)
+            if not tasks:
+                return "还没有任务记录。"
+            for event in reversed(self.engine.store.events(tasks[0]["task_id"])):
+                payload = json.loads(event["payload"] or "{}")
+                if event["stage"] == "error":
+                    return "运行记录显示：" + str(payload.get("reason") or "执行失败。")
+                if event["stage"] == "check-review":
+                    if payload.get("ok"):
+                        return f"最近任务第 {payload.get('round')} 轮的独立审查已通过。"
+                    return "独立审查退回了候选：" + "；".join(payload.get("issues") or ["详见阶段事件。"])
+                if event["stage"] == "check-tests" and not payload.get("ok"):
+                    failures = [case for case in payload.get("details", []) if not case.get("ok")]
+                    evidence = json.dumps(failures[:2], ensure_ascii=False) if failures else payload.get("error")
+                    return f"最近任务第 {payload.get('round')} 轮在测试阶段退回。{evidence or ''}"
+            return "目前还没有这项任务的测试失败或独立审查记录。"
+        return None
+
+    def _demo_reply(self, t: str) -> str:
         if any(k in t for k in ("你好", "hi", "hello", "在吗")):
             return "在。你可以让我跑任务，也可以问我刚才为什么被打回。"
         if any(k in t for k in ("谢谢", "辛苦")):
@@ -188,7 +199,9 @@ def bridge_events(engine, hub: Hub, chat: ChatStore, demo: bool = True):
                      "seq": seq, "payload": payload or {}})
         text = interjection_for(stage, payload or {}, task_id)
         if text:
-            msg = chat.add("assistant", text, kind="interject")
+            task = engine.store.task(task_id) or {}
+            label = str(task.get("title") or task_id)[:60]
+            msg = chat.add("assistant", f"「{label}」\n{text}", kind="interject")
             hub.publish({"type": "chat", "message": msg})
         return seq
 
@@ -201,9 +214,10 @@ def bridge_events(engine, hub: Hub, chat: ChatStore, demo: bool = True):
         previous = engine.store.task(task_id)
         original_upsert(task_id, digest, status, rounds, detail, title=title)
         if status in ("succeeded", "failed") and (not previous or previous.get("status") != status):
-            text = ("任务已完成，结果可在阶段事件中查看。" if status == "succeeded"
+            text = ("任务已完成，可在「执行结果」查看输出和代码。" if status == "succeeded"
                     else "任务未完成。" + (detail or {}).get("reason", "请查看阶段事件。"))
-            msg = chat.add("assistant", text, kind="interject")
+            label = str(title or (previous or {}).get("title") or task_id)[:60]
+            msg = chat.add("assistant", f"「{label}」\n{text}", kind="interject")
             hub.publish({"type": "chat", "message": msg})
         hub.publish({"type": "task-update", "task_id": task_id, "status": status, "rounds": rounds})
 
@@ -213,6 +227,10 @@ def bridge_events(engine, hub: Hub, chat: ChatStore, demo: bool = True):
 
 def interjection_for(stage: str, payload: dict, task_id: str) -> str:
     if stage == "check-tests" and payload.get("ok") is False:
+        if payload.get("attempted") is False:
+            return ""
+        if payload.get("mode") == "smoke":
+            return f"第 {payload.get('round')} 轮脚本试运行失败，运行错误已反馈给编码角色。"
         failed = payload.get("passed", 0)
         total = payload.get("total", 0)
         return f"第 {payload.get('round')} 轮测试没过（{failed}/{total}），我把失败用例塞回给编码那边了。"
@@ -261,7 +279,7 @@ main{display:grid;grid-template-columns:1.08fr .92fr;gap:18px;padding:18px 26px 
 .divider{height:1px;background:var(--line);margin:16px 0 14px}
 
 /* 表单 */
-input,textarea,button{font:inherit}
+input,textarea,button,select{font:inherit}
 input[type=text],input[type=password],textarea{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 11px;outline:none;background:#fbfdff;transition:border-color .15s}
 input[type=text]:focus,input[type=password]:focus,textarea:focus{border-color:#9dbcff;background:#fff}
 button{border:0;border-radius:9px;padding:9px 16px;background:var(--blue);color:#fff;cursor:pointer;font-weight:600;white-space:nowrap;transition:filter .15s}
@@ -368,6 +386,24 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
 
 /* 大输入框 */
 #desc{min-height:92px;font-size:14px;line-height:1.7}
+.contract-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+.contract-tools select{padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:#fff}
+.contract-tools button{padding:5px 10px;font-size:12px}
+#checks{margin-top:8px;border:1px solid var(--line);border-radius:9px;padding:8px 11px}
+#checks summary{color:var(--navy);cursor:pointer}
+.case-fields{display:grid;grid-template-columns:1fr 1fr auto;align-items:start;gap:8px;margin:10px 0}
+.case-fields label,#nameField{display:grid;gap:3px;font-size:12px;color:var(--muted)}
+.case-fields textarea{min-height:45px;resize:vertical;line-height:1.45}
+.case-fields .empty-check{display:block}
+#nameField[hidden],.empty-check[hidden]{display:none}
+#checkHint,#taskNotice{margin:6px 0}
+#taskNotice{color:var(--fail);white-space:pre-wrap}
+.case-fields button,#addCase{padding:5px 10px;font-size:12px}
+#result pre,.test-detail{white-space:pre-wrap;overflow-wrap:anywhere}
+#result pre{background:#f8fafd;padding:10px;border-radius:7px;overflow:auto}
+.test-detail{margin:6px 0;font:12px/1.55 Consolas,"微软雅黑",monospace}
+.task[role=button]{cursor:pointer}
+@media(max-width:600px){.case-fields{grid-template-columns:1fr}.case-fields button{justify-self:start}}
 
 
 /* 回放控制条 */
@@ -395,8 +431,18 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
 <main>
   <section class="card">
     <h2>任务 <small id="taskCount">0 个</small></h2>
-    <p class="hint">把要做的事写清楚，剩下的交给系统：它自己规划、生成、检查、修正。默认会跑内置的加法示例。</p>
-    <textarea id="desc" placeholder="例如：实现 add(a,b) 返回两数之和，支持负数与小数">实现 add(a,b) 返回两数之和，支持负数与小数</textarea>
+    <p class="hint" id="taskHint">离线模式可复现下方加法示例。在线模式可编写 Python 脚本或指定函数。</p>
+    <textarea id="desc" aria-label="任务说明" placeholder="例如：写一个 Python 脚本，在屏幕上打印 Hello World">实现 add(a,b) 返回两数之和，支持负数与小数</textarea>
+    <div class="contract-tools"><label for="taskType">交付形式</label>
+      <select id="taskType"><option value="auto">按任务说明识别</option><option value="script">脚本（标准输入 / 输出）</option><option value="function">函数（参数 / 返回值）</option></select>
+      <button id="restoreDemo" class="ghost">载入加法示例</button>
+    </div>
+    <details id="checks"><summary id="checkSummary">验收条件</summary>
+      <p class="hint" id="checkHint"></p>
+      <label id="nameField">函数名<input type="text" id="fname" autocomplete="off" placeholder="例如 square"></label>
+      <div id="cases"></div><button id="addCase" class="ghost">添加用例</button>
+    </details>
+    <p id="taskNotice" role="status"></p>
     <div class="row" style="align-items:center;justify-content:space-between">
       <div class="seg" id="modeSwitch">
         <button data-mode="auto" class="on">全自动</button>
@@ -404,8 +450,6 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
       </div>
       <button id="run">开始执行</button>
     </div>
-    <input id="fname" type="hidden" value="add">
-    <input id="tests" type="hidden" value='[[[1,2],3],[[-1,5],4],[[0.5,0.5],1]]'>
     <div class="stats">
       <div class="stat"><b id="statRounds">—</b><span>平均轮次</span></div>
       <div class="stat"><b id="statCache">—</b><span>缓存命中</span></div>
@@ -414,13 +458,14 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
     </div>
     <div class="replay-bar">
       <button id="replayBtn" class="ghost">逐轮回放</button>
-      <span class="replay-tip" id="replayTip">把最近一个任务按轮次一步步放给你看</span>
+      <span class="replay-tip" id="replayTip">按轮次回放所选任务</span>
       <span class="replay-badge hidden" id="replayBadge"></span>
     </div>
     <div class="sugg-bar"><span class="sugg-label">下一步可能是</span><div id="suggests"></div><span id="suggStats" class="sugg-stat"></span></div>
     <div id="tasks"></div>
+    <section id="result" hidden><div class="divider"></div><h2>执行结果</h2><div id="resultBody"></div></section>
     <div class="divider"></div>
-    <h2>思考链路 <small id="chainMeta">最近一个任务</small></h2>
+    <h2>思考链路 <small id="chainMeta">所选任务</small></h2>
     <p class="hint">规划 → 生成 → 静态检查 → 测试 → 审查 → 裁决，一道一道过。</p>
     <div class="chain" id="chain"><div class="empty">提交任务后，这里会显示它每一步在想什么、卡在哪。</div></div>
     <div class="divider"></div>
@@ -449,7 +494,7 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
     <div class="pb">
       <h4 style="margin:0 0 8px;font-size:14px;color:#0f2a5f">界面分区</h4>
       <dl class="kv">
-        <dt>任务区</dt><dd>默认演示加法函数的三条公开用例。自定义测试可用 JSON 文件或本地任务接口提交。</dd>
+        <dt>任务区</dt><dd>离线入口可复现加法示例。在线时，输入任务说明，选择脚本或函数，在「验收条件」填写输出或返回值。脚本也可以只试运行，由独立审查角色核对需求。</dd>
         <dt>下一步建议</dt><dd>根据上一轮结果给出可点选项，点一下自动提交，也可自己手打</dd>
         <dt>任务列表</dt><dd>每个任务的状态徽章显示「成功 / 失败 / 中断」和轮次</dd>
         <dt>结构化决策记录</dt><dd>每轮的事实锁定、要避开的开头、配图语音开关、上下文用量</dd>
@@ -525,6 +570,131 @@ const $ = s => document.querySelector(s);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hp.classList.add('hidden'); });
 })();
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+const demoDescription = $('#desc').defaultValue;
+const demoTests = [[[1, 2], 3], [[-1, 5], 4], [[0.5, 0.5], 1]];
+let formType, presetDescription = '', lastInferredName = '', selectedTaskId = '', detailRequest = 0;
+function inferTask(description){
+  const asksForScript = /(?:写|编写|生成|创建|实现|制作|开发|交付)(?:一?[个段份支]|出)?\s*(?:Python\s*)?(?:控制台|命令行|小)?(?:程序|脚本)|^\s*(?:Python\s*)?(?:脚本|程序)|\b(?:write|create|make|build|implement|generate)\s+(?:(?:a|an)\s+)?(?:(?:standalone|python|console|command[- ]line)\s+)*(?:script|program)\b/i.test(description);
+  if (asksForScript) return {type:'script', name:''};
+  const signature = description.match(/(?:\bdef\s+|(?:实现|编写|设计|定义|implement|define|function|函数)\s*[\x60'"]*)([A-Za-z_]\w*)\s*[(（]/i)
+    || description.match(/(?:函数(?:名(?:为|是)?)?|function\s+(?:called\s+|named\s+)?)[\s\x60'"]*([A-Za-z_]\w*)/i);
+  const name = signature ? signature[1] : '';
+  const namedFunction = name && !/^(print|input|to|that|which|a|named|called)$/i.test(name);
+  const asksForFunction = /(?:实现|编写|创建|定义|写|设计)(?:一[个支段])?(?:\s*Python\s*)?函数|\b(?:implement|write|define|create)\s+(?:a\s+)?(?:python\s+)?function\b/i.test(description);
+  return {type:namedFunction || asksForFunction ? 'function' : 'script', name:namedFunction ? name : ''};
+}
+function displayValue(value){
+  if (typeof value !== 'string') return JSON.stringify(value);
+  // Keep numeric-looking and multiline strings distinct from numbers and argument separators.
+  try { JSON.parse(value); return JSON.stringify(value); } catch (_) {}
+  return value.trim() !== value || value.includes('\n') || !value ? JSON.stringify(value) : value;
+}
+function functionValue(raw){
+  try { return JSON.parse(raw); } catch (_) { return raw; }
+}
+function addCase(args, expected){
+  const script = formType === 'script';
+  const row = document.createElement('div');
+  row.className = 'case-fields';
+  row.innerHTML = '<label>' + (script ? '标准输入（可留空）' : '函数参数（每行一个）') +
+    '<textarea rows="2" class="case-input"></textarea></label><label>' +
+    (script ? '期望标准输出（逐行填写）' : '期望返回值') +
+    '<textarea rows="2" class="case-expected"></textarea></label><button type="button" class="ghost" aria-label="移除此用例">移除</button>';
+  if (script) {
+    const label = document.createElement('label');
+    label.className = 'empty-check';
+    label.innerHTML = '<input type="checkbox"> 核对空输出';
+    row.children[1].append(label);
+    label.firstChild.checked = expected === '';
+    label.firstChild.onchange = () => {
+      if (label.firstChild.checked) row.querySelector('.case-expected').value = '';
+      updateSummary();
+    };
+  }
+  const input = row.querySelector('.case-input'), output = row.querySelector('.case-expected');
+  if (args) input.value = script ? (args[0] || '') : args.map(displayValue).join('\n');
+  if (expected !== undefined) output.value = script ? expected : displayValue(expected);
+  input.placeholder = script ? '程序从 input() 读取的文本' : '例如 2 和 3 分两行填写';
+  output.placeholder = script ? '例如 Hello World' : '例如 5';
+  row.querySelector('button').onclick = () => { row.remove(); updateSummary(); };
+  row.oninput = e => {
+    if (script && e.target === output && output.value !== '') row.querySelector('input').checked = false;
+    updateSummary();
+  };
+  $('#cases').append(row);
+  updateSummary();
+}
+function updateSummary(){
+  const rows = Array.from($('#cases').children);
+  const count = rows.filter(row => row.querySelector('.case-expected').value !== '' || row.querySelector('input:checked')).length;
+  $('#checkSummary').textContent = '验收条件 · ' + (formType === 'script' ? '脚本' : '函数 ' + $('#fname').value) +
+    (count ? ' · ' + count + ' 组用例' : formType === 'script' ? ' · 试运行与独立审查' : ' · 请填写用例');
+}
+function showContract(type, name, tests){
+  formType = type;
+  $('#fname').value = name;
+  $('#nameField').hidden = type === 'script';
+  $('#checkHint').textContent = type === 'script'
+    ? '可填写输入和期望输出逐项核对。留空时试运行脚本、展示实际输出，再由审查角色核对任务说明。'
+    : '填写参数和期望返回值。文本可直接输入；数字、列表和布尔值按其实际类型比较。';
+  $('#cases').replaceChildren();
+  tests.forEach(t => {
+    if (Array.isArray(t)) addCase(t[0], t[1]);
+    else if (type === 'script' && 'stdout' in t) addCase([t.stdin || ''], t.stdout);
+    else addCase(t.args, t.expected);
+  });
+  if (!tests.length) addCase();
+  updateSummary();
+}
+function syncContract(force = false){
+  const desc = $('#desc').value.trim(), choice = $('#taskType').value, inferred = inferTask(desc);
+  const type = choice === 'auto' ? inferred.type : choice;
+  const demo = desc === demoDescription && type === 'function';
+  const leftPreset = presetDescription && desc !== presetDescription;
+  const newName = type === 'function' && inferred.name && inferred.name !== lastInferredName && inferred.name !== $('#fname').value;
+  const removedInferredName = type === 'function' && !inferred.name && lastInferredName && lastInferredName === $('#fname').value;
+  if (force || type !== formType || leftPreset || newName || removedInferredName) {
+    showContract(type, type === 'function' ? inferred.name : '', demo ? demoTests : []);
+    presetDescription = demo ? demoDescription : '';
+    $('#checks').open = !demo;
+  }
+  lastInferredName = inferred.name;
+  $('#taskNotice').textContent = '';
+}
+$('#desc').addEventListener('input', () => syncContract());
+$('#taskType').onchange = () => syncContract();
+$('#fname').oninput = () => {
+  // The former function's examples cannot validate a newly named function.
+  presetDescription = '';
+  $('#cases').replaceChildren(); addCase(); updateSummary();
+};
+$('#restoreDemo').onclick = () => {
+  $('#desc').value = demoDescription; $('#taskType').value = 'auto'; syncContract(true);
+};
+$('#addCase').onclick = () => addCase();
+syncContract(true);
+function taskFromForm(){
+  const description = $('#desc').value.trim();
+  if (!description) throw new Error('请先写下要完成的任务。');
+  const body = {description, task_type:formType, tests:[]};
+  if (formType === 'function') {
+    body.function_name = $('#fname').value.trim();
+    if (!body.function_name) throw new Error('请填写函数名，或把交付形式改为脚本。');
+  }
+  for (const row of $('#cases').children) {
+    const input = row.querySelector('.case-input').value, expected = row.querySelector('.case-expected').value;
+    if (formType === 'script') {
+      if (expected !== '' || row.querySelector('input').checked) body.tests.push([[input], expected]);
+      else if (input !== '') throw new Error('有标准输入的用例还需填写期望输出，或勾选「核对空输出」。');
+    } else if (expected !== '') {
+      body.tests.push([input ? input.split('\n').map(functionValue) : [], functionValue(expected)]);
+    } else if (input !== '') {
+      throw new Error('请填写这组函数参数的期望返回值。空字符串可写为 ""。');
+    }
+  }
+  if (formType === 'function' && !body.tests.length) throw new Error('请为这个函数填写至少一组参数和期望返回值。');
+  return body;
+}
 function addMsg(m){
   if (m.kind === 'interject' && !$('#interject').checked) return;
   const el = document.createElement('div');
@@ -533,11 +703,7 @@ function addMsg(m){
     '</div><div class="bub">' + esc(m.text) + '</div></div>';
   $('#chat').appendChild(el); $('#chat').scrollTop = 1e9;
 }
-async function loadInner(id){
-  if (!id) return;
-  try {
-    const r = await fetch('/api/tasks/' + encodeURIComponent(id));
-    const d = await r.json();
+function renderInner(d){
     const rows = (d.events || []).filter(e => e.stage === 'inner');
     if (!rows.length) { $('#innerTable').innerHTML = '<div class="empty">还没有记录。跑一个任务，这里会按轮次显示事实锁定、避开的开头与上下文用量。</div>'; return; }
     let html = '<table class="inner"><tr><th>轮次</th><th>事实锁定</th><th>避开开头</th><th>配图/语音</th><th>上下文</th></tr>';
@@ -550,7 +716,6 @@ async function loadInner(id){
     });
     html += '</table>';
     $('#innerTable').innerHTML = html;
-  } catch (e) { /* 不影响主流程 */ }
 }
 async function loadMetrics(){
   try {
@@ -577,9 +742,13 @@ async function useSuggestion(s){
     fetch('/api/suggest/accept', {method:'POST', headers:{'content-type':'application/json'},
       body: JSON.stringify({id: s.id, kind: s.kind})}).then(loadSuggestions);
     if (s.kind === 'task' && s.payload) {
-      if (s.payload.description) $('#desc').value = s.payload.description;
-      if (s.payload.function_name) $('#fname').value = s.payload.function_name;
-      if (s.payload.tests) $('#tests').value = JSON.stringify(s.payload.tests);
+      const p = s.payload;
+      $('#desc').value = p.description || '';
+      $('#taskType').value = p.task_type || (p.function_name ? 'function' : 'script');
+      showContract($('#taskType').value, p.function_name || '', p.tests || []);
+      presetDescription = $('#desc').value.trim();
+      lastInferredName = inferTask(presetDescription).name;
+      $('#taskNotice').textContent = '';
       $('#run').click();
     } else if (s.kind === 'chat' && s.payload) {
       $('#msg').value = s.payload.text || '';
@@ -600,27 +769,111 @@ async function loadTasks(){
     let reason = '';
     if (t.status === 'failed') { try { reason = JSON.parse(t.detail || '{}').reason || ''; } catch (_) {} }
     const status = {queued:'排队中',running:'运行中',succeeded:'成功',failed:'失败',interrupted:'已中断',cancelled:'已取消'}[t.status] || t.status;
-    return '<div class="task" data-id="' + esc(t.task_id) + '"><div class="top"><b>' + esc(title) +
+    return '<div class="task" role="button" tabindex="0" data-id="' + esc(t.task_id) + '"><div class="top"><b>' + esc(title) +
       '</b><span class="badge ' + cls + '">' + esc(status) + ' · ' + esc(t.rounds) + ' 轮</span></div>' +
       (reason ? '<div>' + esc(reason) + '</div>' : '') + '</div>';
   }).join('') || '<div style="color:#5b6b7a;font-size:12.5px">还没有任务</div>';
 }
+function showTask(id){
+  if (!id) return;
+  selectedTaskId = id;
+  loadEvents(id);
+}
+$('#tasks').onclick = e => showTask(e.target.closest('[data-id]')?.dataset.id);
+$('#tasks').onkeydown = e => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    const task = e.target.closest('[data-id]');
+    if (task) { e.preventDefault(); showTask(task.dataset.id); }
+  }
+};
+function testSummary(p){
+  if (p.attempted === false) return '静态检查未通过，本轮未执行测试';
+  if (p.mode === 'smoke') return (p.ok ? '试运行完成' : '试运行失败') + '（无输出断言）';
+  return (p.mode === 'stdout' ? '标准输出 ' : '') + p.passed + '/' + p.total + (p.ok ? ' 通过' : ' 未通过');
+}
+function testEvidence(p){
+  const lines = [];
+  (p.details || []).forEach((test, n) => {
+    if (test.kind === 'smoke' || p.mode === 'smoke') {
+      lines.push('实际输出\n' + (test.stdout || '（空）'));
+    } else if (p.mode === 'stdout') {
+      lines.push('用例 ' + (n+1) + (test.ok ? ' ✓' : ' ×') + '\n标准输入\n' + (test.stdin || '（空）') +
+        '\n期望输出\n' + (test.expected || '（空）') + '\n实际输出\n' + (test.stdout || '（空）'));
+    } else {
+      lines.push('用例 ' + (n+1) + (test.ok ? ' ✓' : ' ×') +
+        (Array.isArray(test.args) ? '　参数 ' + JSON.stringify(test.args) : '') +
+        (Object.hasOwn(test, 'expected') ? '　期望返回 ' + test.expected : '') +
+        (Object.hasOwn(test, 'got') ? '　实际返回 ' + test.got : ''));
+    }
+    if (test.error) lines.push(test.error);
+  });
+  if (p.error) lines.push(p.error);
+  return lines.join('\n');
+}
+function renderResult(d){
+  const checks = (d.events || []).filter(e => e.stage === 'check-tests' || e.stage === 'cache-hit');
+  const event = checks[checks.length-1];
+  const last = event ? JSON.parse(event.payload) : null;
+  const detail = JSON.parse(d.task.detail || '{}');
+  const code = detail.code || (last && last.candidate);
+  $('#result').hidden = !(last || code || detail.reason);
+  const body = $('#resultBody');
+  body.replaceChildren();
+  function block(tag, text) {
+    const el = document.createElement(tag);
+    el.textContent = text; body.append(el); return el;
+  }
+  if (last) {
+    block('b', event.stage === 'cache-hit' ? '复用候选 · 当前用例重验 ' + last.tests : '第 ' + last.round + ' 轮 · ' + testSummary(last));
+    const evidence = testEvidence(last);
+    if (evidence) block('pre', evidence);
+  }
+  if (detail.reason) block('p', detail.reason);
+  if (last && event.stage === 'check-tests') {
+    const reviews = d.events.filter(e => e.stage === 'check-review');
+    const review = reviews.length ? JSON.parse(reviews[reviews.length-1].payload) : null;
+    if (review && review.round === last.round) {
+      block('p', review.ok ? '独立审查通过' : '独立审查退回：' + (review.issues || []).join('；'));
+    }
+  }
+  if (code) {
+    block('b', '候选代码');
+    const pre = block('pre', code), copy = block('button', '复制代码');
+    copy.className = 'ghost';
+    copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(code); copy.textContent = '已复制'; }
+      catch (_) {
+        const range = document.createRange(); range.selectNodeContents(pre);
+        const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        copy.textContent = '代码已选中，请复制';
+      }
+    };
+  }
+}
 async function loadEvents(id){
   if (!id) return;
+  const request = ++detailRequest;
   const r = await fetch('/api/tasks/' + encodeURIComponent(id)); const d = await r.json();
+  if (request !== detailRequest || id !== selectedTaskId || !d.task) return;
+  $('#chainMeta').textContent = (d.task.title || id).slice(0, 40);
+  renderResult(d); renderInner(d); window.renderChain(d);
   const html = (d.events || []).map(e =>
     '<div>#' + e.seq + ' ' + esc(e.stage) + ' ' + esc((e.payload || '').slice(0, 120)) + '</div>').join('');
   $('#events').innerHTML = html || '<div class="empty">还没有事件。提交一个任务后，这里会显示规划、生成、检查、审查的完整流水。</div>';
 }
 $('#run').onclick = async () => {
-  const body = {description: $('#desc').value || '实现 add(a,b)',
-    function_name: $('#fname').value || 'add', tests: JSON.parse($('#tests').value)};
   $('#run').disabled = true;
+  $('#taskNotice').textContent = '';
   try {
+    const body = taskFromForm();
     const r = await fetch('/api/tasks', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
-    if (!r.ok) alert('提交失败：' + (await r.text()));
-    else { const d = await r.json(); setTimeout(() => loadEvents(d.task_id), 400); }
-  } finally { $('#run').disabled = false; setTimeout(loadTasks, 300); setTimeout(loadSuggestions, 800); setTimeout(function(){ loadInner(0); loadMetrics(); }, 1200); }
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || '提交失败，请重试。');
+    showTask(d.task_id);
+  } catch (e) {
+    $('#checks').open = true;
+    $('#taskNotice').textContent = e.message;
+  } finally { $('#run').disabled = false; setTimeout(loadTasks, 300); setTimeout(loadSuggestions, 800); setTimeout(loadMetrics, 1200); }
 };
 $('#send').onclick = async () => {
   const t = $('#msg').value.trim(); if (!t) return;
@@ -637,6 +890,9 @@ function displayMode(d) {
   const label = {offline:'可复现离线', deepseek:'DeepSeek 在线', custom:'自定义在线'}[d.mode];
   if (!label) return;
   $('#modelMode').textContent = label + (d.mode === 'offline' ? '' : ' · ' + d.model);
+  $('#taskHint').textContent = d.mode === 'offline'
+    ? '离线模式只复现预设加法示例。自定义脚本和函数请切换到 DeepSeek 在线或自己的模型。'
+    : '写下 Python 任务。脚本可核对标准输出，函数可核对给定参数的返回值。';
   if (d.mode !== 'offline') $('#keepMode').hidden = false;
 }
 async function readMode() {
@@ -646,13 +902,21 @@ async function readMode() {
   } catch (_) { $('#modelMode').textContent = '服务连接中断'; }
 }
 es.onopen = readMode;
+let taskRefreshTimer;
 es.onmessage = ev => {
   const d = JSON.parse(ev.data);
   if (d.type === 'mode') readMode();
   if (d.type === 'chat') addMsg(d.message);
-  if (d.type === 'task' || d.type === 'task-update') { loadTasks(); loadEvents(d.task_id); loadSuggestions(); loadInner(d.task_id); loadMetrics(); }
+  if (d.type === 'task' || d.type === 'task-update') {
+    if (!selectedTaskId) selectedTaskId = d.task_id;
+    if (!taskRefreshTimer) taskRefreshTimer = setTimeout(() => {
+      taskRefreshTimer = null;
+      loadTasks(); loadSuggestions(); loadMetrics(); loadEvents(selectedTaskId);
+    }, 120);
+  }
 };
-loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').then(r=>r.json()).then(d => { if (d.tasks[0]) { loadEvents(d.tasks[0].task_id); loadInner(d.tasks[0].task_id); } });
+loadChat(); loadTasks(); loadSuggestions(); loadMetrics();
+fetch('/api/tasks').then(r=>r.json()).then(d => { if (!selectedTaskId && d.tasks[0]) showTask(d.tasks[0].task_id); });
 
 // ================= 新版交互 =================
 (function(){
@@ -760,7 +1024,7 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
   function nodeText(e){
     const p = safe(e.payload);
     if (e.stage === 'error') return p.reason || '请查看阶段事件。';
-    if (e.stage === 'check-tests') return p.ok ? (p.passed + '/' + p.total + ' 通过') : (p.passed + '/' + p.total + ' 未通过');
+    if (e.stage === 'check-tests') return testSummary(p);
     if (e.stage === 'check-review') {
       const checks = p.checks || [];
       const tally = checks.length ? ' · 附加用例 ' + checks.filter(c => c.ok).length + '/' + checks.length : '';
@@ -773,23 +1037,18 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
     return '';
   }
   function safe(x){ try { return JSON.parse(x || '{}'); } catch (e) { return {}; } }
-  async function loadChain(id){
-    if (!id) return;
-    try {
-      const d = await (await fetch('/api/tasks/' + encodeURIComponent(id))).json();
+  window.renderChain = function(d){
       const rows = (d.events || []).filter(e => LABEL[e.stage]);
       const box = $id('chain');
       if (!rows.length) { box.innerHTML = '<div class="empty">提交任务后，这里会显示它每一步在想什么、卡在哪。</div>'; return; }
       box.innerHTML = rows.map(e => {
         const cls = nodeClass(e), t = nodeText(e);
         return '<div class="node ' + cls + '" data-round="' + Number(safe(e.payload).round || 0) + '"><div class="dot">' + (cls === 'ok' ? '✓' : cls === 'bad' ? '!' : '·') + '</div>' +
-          '<div class="body"><b>' + LABEL[e.stage] + '</b>' + (t ? '<div>' + esc(t) + '</div>' : '') + '</div></div>';
+          '<div class="body"><b>' + LABEL[e.stage] + '</b>' + (t ? '<div>' + esc(t) + '</div>' : '') +
+          (e.stage === 'check-tests' ? '<details><summary>查看用例和实际结果</summary><pre class="test-detail">' +
+            esc(testEvidence(safe(e.payload))) + '</pre></details>' : '') + '</div></div>';
       }).join('');
-    } catch (e) {}
-  }
-  const origLoadEvents = window.loadEvents;
-  window.loadEvents = async (id) => { if (origLoadEvents) await origLoadEvents(id); loadChain(id); };
-  fetch('/api/tasks').then(r => r.json()).then(d => { if (d.tasks && d.tasks[0]) loadChain(d.tasks[0].task_id); });
+  };
 })();
 
   // ---- 逐轮回放：每轮停顿，自动往下走 ----
@@ -799,10 +1058,8 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
     if (replayTimer) { clearInterval(replayTimer); replayTimer = null; }
     const badge = document.getElementById('replayBadge');
     const tip = document.getElementById('replayTip');
-    const tasks = await (await fetch('/api/tasks')).json();
-    const t = tasks.tasks && tasks.tasks[0];
-    if (!t) { tip.textContent = '还没有任务，先点「开始执行」'; return; }
-    const d = await (await fetch('/api/tasks/' + encodeURIComponent(t.task_id))).json();
+    if (!selectedTaskId) { tip.textContent = '还没有任务，先点「开始执行」'; return; }
+    const d = await (await fetch('/api/tasks/' + encodeURIComponent(selectedTaskId))).json();
     const evs = d.events || [];
     const only = evs.filter(e => /check-tests|check-review|do/.test(e.stage));
     const rounds = [...new Set(only.map(e => parseJ(e.payload).round).filter(x => x > 0))].sort((a,b)=>a-b);
@@ -836,7 +1093,7 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
 
 def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
                 host="127.0.0.1", port=8765) -> ThreadingHTTPServer:
-    from .contract import TaskContract, TestCase
+    from .contract import TaskContract
     from .engine import TaskScheduler
     from .runtime import ModelError, OpenAICompatibleModel, ScriptedDemoModel
 
@@ -1013,25 +1270,13 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
                 return self._json({"ok": True, "stats": chat.suggestion_stats()})
             if path == "/api/tasks":
                 try:
-                    def to_case(t):
-                        # 支持两种写法：{"args":[...],"expected":...} 或 [[...], expected]
-                        if isinstance(t, dict):
-                            return TestCase(tuple(t["args"]), t["expected"])
-                        return TestCase(tuple(t[0]), t[1])
-
-                    tests = tuple(to_case(t) for t in data["tests"])
-                    c = TaskContract(
-                        task_id=data.get("task_id") or f"http-{uuid.uuid4().hex[:16]}",
-                        description=str(data["description"]),
-                        function_name=str(data["function_name"]),
-                        tests=tests,
-                        max_rounds=int(data.get("max_rounds", 3)),
-                        context_budget_tokens=int(data.get("context_budget_tokens", 2000)),
-                    )
+                    c = TaskContract.from_data(data, task_id=data.get("task_id") or f"http-{uuid.uuid4().hex[:16]}")
                     priority = data.get("priority", 5)
                     if type(priority) is not int or not 0 <= priority <= 9:
                         raise ValueError("priority 必须是 0 至 9 的整数")
                     with mode_lock:
+                        if mode == "offline" and not c.is_add_demo:
+                            raise ValueError("离线模式只复现预设加法。请点顶部「切换模型」，选择 DeepSeek 在线或自己的模型，再执行当前任务。")
                         scope = cache_scope if mode == "custom" else mode
                         c = replace(c, tenant=scope, model=mode_state()["model"])
                         scheduler.submit(c, priority=priority, use_cache=mode == "custom")

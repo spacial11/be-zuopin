@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import keyword
+import math
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
@@ -30,31 +32,81 @@ class TaskContract:
 
     task_id: str
     description: str            # 自然语言
-    function_name: str          # 必须实现的函数名
+    function_name: str          # 函数任务的入口名，脚本使用空字符串
     tests: tuple[TestCase, ...]  # 用户给定的测试
     max_rounds: int = 3
     context_budget_tokens: int = 3000
     deadline_seconds: float = 120.0
     tenant: str = "default"
     model: str = "demo"
+    task_type: str = "function"
+
+    @classmethod
+    def from_data(cls, data: dict, *, task_id: str, default_budget: int = 2000) -> TaskContract:
+        """网页、HTTP 和 CLI 使用同一份任务格式。旧函数任务仍由 function_name 识别。"""
+        if not isinstance(data, dict):
+            raise ContractError("任务必须是 JSON 对象")
+        description = data.get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise ContractError("请填写任务说明")
+        kind = data.get("task_type", "function" if data.get("function_name") else "script")
+        raw_cases = data.get("tests", [])
+        if not isinstance(raw_cases, list):
+            raise ContractError("tests 必须是用例列表")
+        cases = []
+        for item in raw_cases:
+            if isinstance(item, dict) and kind == "script" and "stdout" in item:
+                args, expected = [item.get("stdin", "")], item["stdout"]
+            elif isinstance(item, dict) and "args" in item and "expected" in item:
+                args, expected = item["args"], item["expected"]
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                args, expected = item
+            else:
+                raise ContractError("请为每个用例提供参数和期望结果")
+            if not isinstance(args, (list, tuple)):
+                raise ContractError("每个用例的参数应是列表")
+            cases.append(TestCase(tuple(args), expected))
+        contract = cls(task_id=task_id, description=description.strip(),
+                       function_name=data.get("function_name", "") if kind == "function" else "",
+                       tests=tuple(cases), task_type=kind,
+                       max_rounds=int(data.get("max_rounds", 3)),
+                       context_budget_tokens=int(data.get("context_budget_tokens", default_budget)),
+                       deadline_seconds=float(data.get("deadline_seconds", 120)))
+        contract.validate()
+        return contract
+
+    @property
+    def is_add_demo(self) -> bool:
+        if self.task_type != "function" or self.function_name != "add" or not self.tests:
+            return False
+        description = self.description.lower()
+        if not any(term in description for term in ("两数之和", "加法", "相加", "两数和", "求和", "a + b", "a+b", "sum", "addition", "add two")):
+            return False
+        return all(len(t.args) == 2 and all(type(a) in (int, float) for a in t.args)
+                   and type(t.expected) in (int, float) and t.expected == t.args[0] + t.args[1]
+                   for t in self.tests)
 
     # ---------- 校验 ----------
     def validate(self) -> None:
         if not self.description.strip():
             raise ContractError("description 不能为空")
-        if not self.function_name.isidentifier():
+        if self.task_type not in ("function", "script"):
+            raise ContractError("task_type 必须是 function（函数）或 script（脚本）")
+        if self.task_type == "function" and (not isinstance(self.function_name, str) or not self.function_name.isidentifier() or keyword.iskeyword(self.function_name)):
             raise ContractError(f"函数名不合法：{self.function_name!r}")
-        if not self.tests:
+        if self.task_type == "function" and not self.tests:
             raise ContractError("至少要有一个测试用例")
         if not (1 <= self.max_rounds <= 5):
             raise ContractError("max_rounds 必须在 1~5 之间")
         if self.context_budget_tokens < 256:
             raise ContractError("context_budget_tokens 太小（<256）")
-        if self.deadline_seconds <= 0:
+        if not math.isfinite(self.deadline_seconds) or self.deadline_seconds <= 0:
             raise ContractError("deadline_seconds 必须为正")
         for t in self.tests:
             if not isinstance(t.args, tuple):
                 raise ContractError("测试参数必须是 tuple")
+            if self.task_type == "script" and (len(t.args) > 1 or not all(isinstance(a, str) for a in t.args) or not isinstance(t.expected, str)):
+                raise ContractError("脚本用例需要文本形式的标准输入和预期标准输出")
 
     # ---------- 身份 ----------
     def digest(self) -> str:
@@ -62,6 +114,7 @@ class TaskContract:
         payload = json.dumps(
             {
                 "description": self.description,
+                "task_type": self.task_type,
                 "function_name": self.function_name,
                 "tests": [t.to_json() for t in self.tests],
                 "max_rounds": self.max_rounds,
@@ -121,7 +174,7 @@ class AgentRegistry:
             agent_id="coder-a",
             role="coder",
             capabilities=("code", "python"),
-            instruction="实现给定函数，只输出 JSON：{\"code\": \"...\", \"explanation\": \"...\"}",
+            instruction="按原始任务与验收条件编写 Python 代码。函数任务提供指定函数，脚本任务提供可直接运行的完整脚本。只输出 JSON：{\"code\": \"...\", \"explanation\": \"...\"}",
         ))
         r.register(AgentSpec(
             agent_id="reviewer-b",

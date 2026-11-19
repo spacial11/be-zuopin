@@ -98,6 +98,16 @@ def suggest_next(state: dict | None = None, limit: int = 3) -> list[Suggestion]:
 
     status = task.get("status")
     issues = _review_issues(events)
+    plan = next((_payload(e) for e in events if e.get("stage") == "plan"), {})
+    if not plan.get("is_add_demo"):
+        if issues:
+            out.append(Suggestion("review-why", "查看本次审查意见", "chat",
+                                  {"text": "这次任务为什么被驳回？"},
+                                  "最近一次审查提出了修改意见"))
+        out.append(Suggestion("task-status", "查看当前任务状态", "chat",
+                              {"text": "这个任务现在是什么状态？"},
+                              "根据当前任务记录查看进展"))
+        return out[:limit]
 
     # ---------- 上一个任务失败：优先给"修"的路径 ----------
     if status == "failed":

@@ -46,6 +46,14 @@ FORBIDDEN_NAMES = {
     "getattr", "setattr", "delattr", "vars", "breakpoint", "memoryview",
 }
 FORBIDDEN_ATTRS = {"__class__", "__bases__", "__subclasses__", "__globals__", "__dict__", "__code__"}
+SCRIPT_NODES = {ast.GeneratorExp, ast.Set, ast.SetComp, ast.DictComp}
+SCRIPT_METHODS = {
+    "strip", "lstrip", "rstrip", "split", "rsplit", "splitlines", "join", "replace",
+    "lower", "upper", "casefold", "capitalize", "title", "startswith", "endswith",
+    "find", "rfind", "index", "count", "isdigit", "isalpha", "isalnum", "isspace",
+    "append", "extend", "insert", "pop", "remove", "sort", "reverse", "copy",
+    "keys", "values", "items", "get", "setdefault", "add", "discard",
+}
 MAX_NODES = 400
 MAX_CONST_INT = 10 ** 9
 
@@ -57,9 +65,12 @@ class StaticReport:
     nodes: int = 0
 
 
-def validate_static(code: str, function_name: str) -> StaticReport:
-    """受限 AST：只能写纯函数，不许导入、不许 exec、不许碰文件与网络。"""
+def validate_static(code: str, function_name: str, task_type: str = "function") -> StaticReport:
+    """校验受限语法。脚本额外支持标准输入输出及常用容器和字符串方法。"""
     issues: list[str] = []
+    script = task_type == "script"
+    allowed_nodes = ALLOWED_NODES | SCRIPT_NODES if script else ALLOWED_NODES
+    forbidden_names = FORBIDDEN_NAMES - {"input"} if script else FORBIDDEN_NAMES
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -68,48 +79,103 @@ def validate_static(code: str, function_name: str) -> StaticReport:
     if len(nodes) > MAX_NODES:
         issues.append(f"AST 节点过多：{len(nodes)} > {MAX_NODES}")
     for node in nodes:
-        if type(node) not in ALLOWED_NODES:
+        if type(node) not in allowed_nodes:
             issues.append(f"不允许的语法：{type(node).__name__}")
         if isinstance(node, ast.Import) or isinstance(node, ast.ImportFrom):
             issues.append("不允许 import")
-        if isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
+        if isinstance(node, ast.Name) and node.id in forbidden_names:
             issues.append(f"不允许使用 {node.id}")
-        if isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_ATTRS:
+        if script and isinstance(node, ast.Name) and node.id.startswith("__"):
+            if node.id != "__name__" or not isinstance(node.ctx, ast.Load):
+                issues.append(f"不允许使用 {node.id}")
+        if isinstance(node, ast.Attribute) and (
+            node.attr in FORBIDDEN_ATTRS or (script and node.attr not in SCRIPT_METHODS)
+        ):
             issues.append(f"不允许访问属性 {node.attr}")
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_NAMES:
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in forbidden_names:
             issues.append(f"不允许调用 {node.func.id}")
         if isinstance(node, ast.Constant) and isinstance(node.value, int) and abs(node.value) > MAX_CONST_INT:
             issues.append("常量过大")
     funcs = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
-    if function_name not in funcs:
+    if not script and function_name not in funcs:
         issues.append(f"没有定义函数 {function_name}")
+    if script and not tree.body:
+        issues.append("脚本为空")
     return StaticReport(not issues, sorted(set(issues)), len(nodes))
 
 
 # ---------------------------------------------------------------- 真跑测试
 
 RUNNER = r'''
-import json, sys, signal
+import io, json, sys
 def _fail(*a, **k): raise RuntimeError("sandbox: forbidden builtin")
 payload = json.loads(sys.stdin.read())
-ns = {"__builtins__": {
+safe_builtins = {
     "abs": abs, "min": min, "max": max, "len": len, "sum": sum, "range": range,
     "int": int, "float": float, "str": str, "bool": bool, "list": list, "dict": dict,
     "tuple": tuple, "round": round, "sorted": sorted, "enumerate": enumerate, "zip": zip,
     "ValueError": ValueError, "TypeError": TypeError, "Exception": Exception, "isinstance": isinstance,
-}}
-ns["__builtins__"] = dict(ns["__builtins__"])
-ns["__builtins__"]["__import__"] = _fail
+}
+safe_builtins["__import__"] = _fail
+
+class CapturedOutput(io.StringIO):
+    def write(self, value):
+        if self.tell() + len(value) > 16384:
+            raise ValueError("脚本输出超过 16384 个字符")
+        return super().write(value)
+
+def without_last_newline(value):
+    if value.endswith("\r\n"):
+        return value[:-2]
+    return value[:-1] if value.endswith(("\n", "\r")) else value
+
+def run_script(compiled, case):
+    stdin = case["args"][0] if case["args"] else ""
+    source = io.StringIO(stdin, newline=None)
+    output = CapturedOutput()
+
+    def script_print(*values, sep=" ", end="\n", flush=False):
+        print(*values, sep=sep, end=end, flush=flush, file=output)
+
+    def script_input(prompt=""):
+        if prompt != "":
+            script_print(prompt, end="")
+        line = source.readline()
+        if not line:
+            raise EOFError("标准输入已读完")
+        return line.removesuffix("\n")
+
+    builtins = dict(safe_builtins, print=script_print, input=script_input, map=map,
+                    filter=filter, all=all, any=any, set=set, reversed=reversed)
+    result = {"stdin": stdin, "kind": "assertion" if "expected" in case else "smoke"}
+    try:
+        exec(compiled, {"__builtins__": builtins, "__name__": "__main__"})
+        result["ok"] = True
+    except Exception as e:
+        result.update(ok=False, error=f"{type(e).__name__}: {e}")
+    result["stdout"] = output.getvalue()
+    if "expected" in case:
+        result["expected"] = case["expected"]
+        result["ok"] = result["ok"] and without_last_newline(result["stdout"]) == without_last_newline(case["expected"])
+    return result
+
 try:
-    exec(compile(payload["code"], "<candidate>", "exec"), ns)
-    fn = ns[payload["function_name"]]
+    compiled = compile(payload["code"], "<candidate>", "exec")
     results = []
-    for case in payload["tests"]:
-        try:
-            got = fn(*case["args"])
-            results.append({"ok": got == case["expected"], "got": repr(got), "expected": repr(case["expected"])})
-        except Exception as e:
-            results.append({"ok": False, "error": f"{type(e).__name__}: {e}"})
+    if payload["task_type"] == "script":
+        results = [run_script(compiled, case) for case in (payload["tests"] or [{"args": []}])]
+    else:
+        ns = {"__builtins__": safe_builtins}
+        exec(compiled, ns)
+        fn = ns[payload["function_name"]]
+        for case in payload["tests"]:
+            try:
+                got = fn(*case["args"])
+                results.append({"ok": got == case["expected"], "args": case["args"],
+                                "got": repr(got), "expected": repr(case["expected"])})
+            except Exception as e:
+                results.append({"ok": False, "args": case["args"], "expected": repr(case["expected"]),
+                                "error": f"{type(e).__name__}: {e}"})
     print(json.dumps({"ok": True, "results": results}))
 except Exception as e:
     print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}))
@@ -126,9 +192,13 @@ class TestReport:
 
 
 def run_tests(code: str, contract: TaskContract, timeout: float = 10.0) -> TestReport:
+    static = validate_static(code, contract.function_name, contract.task_type)
+    if not static.ok:
+        return TestReport(False, 0, len(contract.tests), error="；".join(static.issues))
     payload = {
         "code": code,
         "function_name": contract.function_name,
+        "task_type": contract.task_type,
         "tests": [{"args": list(t.args), "expected": t.expected} for t in contract.tests],
     }
     try:
@@ -148,6 +218,8 @@ def run_tests(code: str, contract: TaskContract, timeout: float = 10.0) -> TestR
     if not data.get("ok"):
         return TestReport(False, 0, len(contract.tests), error=data.get("error", "执行失败"))
     results = data["results"]
+    if contract.task_type == "script" and not contract.tests:
+        return TestReport(results[0]["ok"], 0, 0, results, results[0].get("error", ""))
     passed = sum(1 for r in results if r.get("ok"))
     return TestReport(passed == len(results), passed, len(results), results)
 
@@ -216,7 +288,7 @@ class Reviewer:
         self.agent_id = agent_id
 
     def review(self, contract: TaskContract, code: str, test_summary: str) -> tuple[bool, list[str], list[dict]]:
-        if isinstance(self.model, ScriptedDemoModel) and contract.function_name == "add":
+        if isinstance(self.model, ScriptedDemoModel) and contract.is_add_demo:
             cases = (TestCase((0.5, 0.25), 0.75), TestCase((-2, 0.5), -1.5))
             report = run_tests(code, replace(contract, tests=cases))
             evidence = [
@@ -231,9 +303,13 @@ class Reviewer:
             if report.error:
                 issues.append(report.error)
             return report.ok, issues, evidence
+        if contract.task_type == "script":
+            target = "类型：独立运行的 Python 脚本。请核对实际标准输出与任务要求。未配置期望输出时，试运行只证明正常退出，仍需独立判断代码与输出是否满足要求。"
+        else:
+            target = f"函数名：{contract.function_name}"
         prompt = (
             "你是独立审查者，不是写代码的人。请只根据任务要求与下面的候选实现判断它是否满足要求。\n"
-            f"任务：{contract.description}\n函数名：{contract.function_name}\n"
+            f"任务：{contract.description}\n{target}\n"
             f"测试用例：{json.dumps([t.to_json() for t in contract.tests], ensure_ascii=False)}\n"
             f"测试执行结果：{test_summary}\n"
             f"候选实现：\n```python\n{code}\n```\n"
@@ -275,22 +351,33 @@ class Engine:
         self.store.event(contract.task_id, "queued", {"digest": digest})
 
         plan = self.planner.plan(contract)
-        self.store.event(contract.task_id, "plan", {"coder": plan.coder, "reviewer": plan.reviewer,
-                                                    "order": list(plan.order), "reason": plan.reason})
+        self.store.event(contract.task_id, "plan", {
+            "coder": plan.coder, "reviewer": plan.reviewer, "order": list(plan.order), "reason": plan.reason,
+            "task_type": contract.task_type, "function_name": contract.function_name,
+            "is_add_demo": contract.is_add_demo,
+        })
 
         # 缓存：命中也要用当前测试重跑一遍
         model = self.model
+        script = contract.task_type == "script"
+        smoke = script and not contract.tests
+        test_mode = ("smoke" if smoke else "stdout") if script else "function"
         cache_model = contract.model
         if isinstance(model, OpenAICompatibleModel):
             cache_model = json.dumps([contract.model, model.url, model.model])
         ckey = CandidateCache.key_for(digest, cache_model, contract.tenant)
-        entry = self.cache.get(ckey) if use_cache else None
+        entry = self.cache.get(ckey) if use_cache and not smoke else None
         if entry:
             t = run_tests(entry.code, contract)
             if t.ok:
                 self.cache.bump(ckey)
-                self.store.event(contract.task_id, "cache-hit", {"tests": f"{t.passed}/{t.total}"})
-                self.store.upsert_task(contract.task_id, digest, "succeeded", 0, {"fromCache": True})
+                details = {"tests": f"{t.passed}/{t.total}"}
+                if script:
+                    details.update(mode=test_mode, details=t.details)
+                self.store.event(contract.task_id, "cache-hit", details)
+                self.store.upsert_task(contract.task_id, digest, "succeeded", 0, {
+                    "fromCache": True, "code": entry.code, "explanation": entry.explanation,
+                })
                 return RunResult(contract.task_id, True, [], "succeeded", True, time.time() - started)
             self.cache.evict(ckey)
             self.store.event(contract.task_id, "cache-stale", {"reason": "命中但当前测试不过，已淘汰"})
@@ -305,11 +392,19 @@ class Engine:
         revision = 1
 
         public_cases = json.dumps([t.to_json() for t in contract.tests], ensure_ascii=False)
-        coder_task = (
-            f"{contract.description}\n函数名：{contract.function_name}\n公开测试用例：{public_cases}\n"
-            "请实现可独立运行的 Python 纯函数。按 args 的顺序接收位置参数，返回 expected 对应的结果。"
-            "请勿导入模块、访问文件或网络。"
-        )
+        if script:
+            target = (
+                "请编写直接运行的 Python 脚本，在顶层执行任务。需要输入时用 input()，输出用 print()。"
+                "每个用例的 args 若有元素，唯一元素是完整标准输入；expected 是完整标准输出。"
+                "可以定义并调用辅助函数，可使用常用字符串方法、循环和条件判断。"
+                "没有用户用例时，评审会用空标准输入试运行。"
+            )
+        else:
+            target = (
+                f"函数名：{contract.function_name}\n请实现可独立运行的 Python 纯函数。"
+                "按 args 的顺序接收位置参数，返回 expected 对应的结果。"
+            )
+        coder_task = f"{contract.description}\n{target}\n公开测试用例：{public_cases}\n请勿导入模块、访问文件或网络。"
         for rnd in range(1, contract.max_rounds + 1):
             window = ContextWindow(contract.context_budget_tokens)
             built = window.build(
@@ -331,7 +426,7 @@ class Engine:
             code, explanation = parse_candidate(out)
             history.append({"seq": len(history) + 1, "role": "assistant", "content": out[:500]})
 
-            static = validate_static(code, contract.function_name)
+            static = validate_static(code, contract.function_name, contract.task_type)
             self.store.event(contract.task_id, "check-static",
                              {"round": rnd, "ok": static.ok, "issues": static.issues, "nodes": static.nodes})
 
@@ -339,13 +434,17 @@ class Engine:
             if static.ok:
                 tests = run_tests(code, contract)
             self.store.event(contract.task_id, "check-tests",
-                             {"round": rnd, "ok": tests.ok, "passed": tests.passed,
+                             {"round": rnd, "ok": tests.ok, "passed": tests.passed, "mode": test_mode,
+                              "attempted": static.ok,
                               "total": tests.total, "error": tests.error,
                               "candidate": code, "details": tests.details})
 
             review_ok, review_issues = False, []
             if static.ok and tests.ok:
-                summary = f"{tests.passed}/{tests.total} 通过"
+                summary = "空标准输入试运行正常结束，未配置输出断言。" if smoke else f"{tests.passed}/{tests.total} 通过"
+                if script:
+                    evidence_rows = [{"stdin": d["stdin"], "stdout": d["stdout"]} for d in tests.details]
+                    summary += "\n实际输入输出记录：" + json.dumps(evidence_rows, ensure_ascii=False)
                 review_ok, review_issues, evidence = reviewer.review(contract, code, summary)
                 self.store.event(contract.task_id, "check-review",
                                  {"round": rnd, "ok": review_ok, "issues": review_issues, "checks": evidence})
@@ -358,7 +457,8 @@ class Engine:
 
             if rec.accepted:
                 # 只有双门都过才允许写缓存
-                self.cache.put(ckey, code, explanation)
+                if not smoke:
+                    self.cache.put(ckey, code, explanation)
                 self.store.upsert_task(contract.task_id, digest, "succeeded", rnd,
                                        {"code": code, "explanation": explanation, "revision": revision})
                 self.store.event(contract.task_id, "act", {"round": rnd, "result": "accepted"})

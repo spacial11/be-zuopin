@@ -54,7 +54,7 @@ def _shrink_json(obj: Any, budget_tokens: int, path: str = "") -> tuple[Any, lis
         # 第一轮：保留 code / 必需键
         for k, v in obj.items():
             p = f"{path}/{k}"
-            if k in ("code", "function_name", "tests", "task"):
+            if k in ("code", "task_type", "function_name", "tests", "task"):
                 out[k] = v
                 continue
         # 第二轮：按剩余预算塞其它键，长的先砍
@@ -408,6 +408,8 @@ class DemoModel:
         if role == "planner":
             return json.dumps({"coder": "coder-a", "reviewer": "reviewer-b", "order": ["test", "review"]})
         if role == "coder":
+            if not contract.is_add_demo:
+                raise ModelError("离线模式复现加法案例。生成自定义任务请切换到在线模型。")
             return json.dumps({
                 "code": _demo_code(contract.function_name),
                 "explanation": "演示模式：按函数名生成最朴素的实现。",
@@ -438,6 +440,8 @@ class ScriptedDemoModel:
         if role == "planner":
             return json.dumps({"coder": "coder-a", "reviewer": "reviewer-b", "order": ["test", "review"]})
         if role == "coder":
+            if not contract.is_add_demo:
+                raise ModelError("离线模式复现加法案例。生成自定义任务请切换到在线模型。")
             self.coder_calls += 1
             if self.script == "fail-first" and self.coder_calls == 1:
                 # 第一轮：把加法写成减法 —— 测试必然不过
