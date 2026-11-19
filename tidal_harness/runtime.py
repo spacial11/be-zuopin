@@ -500,8 +500,8 @@ class OpenAICompatibleModel:
         }
         if self._deepseek:
             payload["thinking"] = {"type": "disabled"}
-            payload["max_tokens"] = {"coder": 2048, "reviewer": 768}.get(role, 512)
-            if role in ("coder", "reviewer"):
+            payload["max_tokens"] = {"coder": 2048, "reviewer": 768, "assistant": 8192}.get(role, 512)
+            if role in ("coder", "reviewer", "assistant"):
                 payload["response_format"] = {"type": "json_object"}
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(self.url, data=body, method="POST")
