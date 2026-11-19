@@ -61,6 +61,19 @@
 | `web.py` | 浏览器面板：对话、主动插话、任务、事件流（SSE） |
 | `__main__.py` | CLI：`demo` / `run` / `serve` |
 
+
+## 直接下载可运行包
+
+不想装 Python，也不想自己 clone 的话，下载这个压缩包：
+
+```
+https://github.com/spacial11/ye-zuopin/raw/main/dist/ye-zuopin-v1.0.0.zip
+```
+
+17 MB，解压后进入 `赛题一+ye队+ye队作品/`，双击 `演示/ye队作品.exe` 即可运行
+（自带 Python 运行时，不联网也能跑通三轮）。
+
+同样的包也挂在 [Releases](https://github.com/spacial11/ye-zuopin/releases) 页面。
 ## 跑起来
 
 ```bash
