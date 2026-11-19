@@ -14,6 +14,7 @@ import queue
 import sqlite3
 import threading
 import time
+import uuid
 
 from . import predict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -62,6 +63,7 @@ class Hub:
 
 class ChatStore:
     def __init__(self, db_path: str):
+        self._db_lock = threading.Lock()
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("""CREATE TABLE IF NOT EXISTS chat(
@@ -75,26 +77,30 @@ class ChatStore:
         self.conn.commit()
 
     def note_suggestion(self, sid: str, kind: str, accepted: bool) -> None:
-        self.conn.execute("INSERT INTO suggestions(id,kind,at,accepted) VALUES(?,?,?,?)",
-                          (sid, kind, time.time(), 1 if accepted else 0))
-        self.conn.commit()
+        with self._db_lock:
+            self.conn.execute("INSERT INTO suggestions(id,kind,at,accepted) VALUES(?,?,?,?)",
+                              (sid, kind, time.time(), 1 if accepted else 0))
+            self.conn.commit()
 
     def suggestion_stats(self) -> dict:
-        row = self.conn.execute(
-            "SELECT COUNT(*) AS n, COALESCE(SUM(accepted),0) AS a FROM suggestions").fetchone()
+        with self._db_lock:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(accepted),0) AS a FROM suggestions").fetchone()
         shown, acc = int(row["n"]), int(row["a"])
         return {"shown": shown, "accepted": acc,
                 "rate": round(acc / shown, 3) if shown else 0.0}
 
     def add(self, role: str, text: str, kind: str = "chat") -> dict:
         at = time.time()
-        cur = self.conn.execute("INSERT INTO chat(role,kind,text,at) VALUES(?,?,?,?)",
-                                (role, kind, text, at))
-        self.conn.commit()
+        with self._db_lock:
+            cur = self.conn.execute("INSERT INTO chat(role,kind,text,at) VALUES(?,?,?,?)",
+                                    (role, kind, text, at))
+            self.conn.commit()
         return {"id": cur.lastrowid, "role": role, "kind": kind, "text": text, "at": at}
 
     def recent(self, limit: int = 60) -> list[dict]:
-        rows = self.conn.execute("SELECT * FROM chat ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        with self._db_lock:
+            rows = self.conn.execute("SELECT * FROM chat ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in reversed(rows)]
 
 
@@ -147,14 +153,10 @@ class ChatBrain:
 
     def _model_reply(self, t: str) -> str:
         from .runtime import OpenAICompatibleModel, ModelError
-        import os
-        base = os.environ.get("TIDAL_MODEL_BASE", "")
-        key = os.environ.get("TIDAL_MODEL_KEY", "")
-        model = os.environ.get("TIDAL_MODEL_NAME", "deepseek-chat")
-        if not base:
-            return "（真实模式未配置：请设置 TIDAL_MODEL_BASE / TIDAL_MODEL_KEY）"
+        m = self.engine.model
+        if not isinstance(m, OpenAICompatibleModel):
+            return "请先配置模型接口。"
         try:
-            m = OpenAICompatibleModel(base, key, model)
             tasks = self.engine.store.tasks(3)
             ctx = "；".join(f"{x['task_id']}={x['status']}" for x in tasks) or "暂无任务"
             out = m.complete([
@@ -441,7 +443,7 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
     <div class="pb">
       <h4 style="margin:0 0 8px;font-size:14px;color:#0f2a5f">界面分区</h4>
       <dl class="kv">
-        <dt>任务区</dt><dd>填写任务描述、函数名、测试用例（JSON 数组），点提交</dd>
+        <dt>任务区</dt><dd>默认演示加法函数的三条公开用例。自定义测试可用 JSON 文件或本地任务接口提交。</dd>
         <dt>下一步建议</dt><dd>根据上一轮结果给出可点选项，点一下自动提交，也可自己手打</dd>
         <dt>任务列表</dt><dd>每个任务的状态徽章显示「成功 / 失败 / 中断」和轮次</dd>
         <dt>结构化决策记录</dt><dd>每轮的事实锁定、要避开的开头、配图语音开关、上下文用量</dd>
@@ -452,7 +454,7 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
       <h4 style="margin:0 0 8px;font-size:14px;color:#0f2a5f">怎么判断它没在糊弄你</h4>
       <div class="steps">
         <div class="step"><div class="n">A</div><div class="t"><b>看第 2 轮</b>
-          <div>测试 3/3 全过，审查仍然驳回，理由是「没处理小数」。如果只有测试，这一轮会被误判成功。</div></div></div>
+          <div>第 2 轮对加法结果取整，公开测试仍有 3/3 通过。独立审查另测两个小数反例，记录实际输出与期望值。</div></div></div>
         <div class="step"><div class="n">B</div><div class="t"><b>看决策记录的事实锁定列</b>
           <div>那些数字是从任务契约里用代码抽出来的，不是模型自己说的。</div></div></div>
         <div class="step"><div class="n">C</div><div class="t"><b>看事件流</b>
@@ -463,7 +465,7 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
       <div style="font-size:13px;color:#3d4b5c;line-height:2">
         <code>python -m tidal_harness demo</code> 跑一遍三轮<br>
         <code>python -m tidal_harness serve --demo</code> 打开本控制台<br>
-        <code>python -m tidal_harness run --contract 契约.json</code> 跑真实任务
+        <code>python -m tidal_harness run --file 示例任务.json --script fail-first</code> 运行离线示例
       </div>
     </div>
     <div class="pf"><button id="helpClose">知道了</button></div>
@@ -586,7 +588,7 @@ async function loadTasks(){
   $('#tasks').innerHTML = d.tasks.map(t => {
     const cls = t.status === 'succeeded' ? 'ok' : (t.status === 'failed' ? 'fail' : '');
     const title = (t.title || '').slice(0, 60) || (t.task_id || '');
-    return '<div class="task" data-id="' + t.task_id + '"><div class="top"><b>' + esc(title) +
+    return '<div class="task" data-id="' + esc(t.task_id) + '"><div class="top"><b>' + esc(title) +
       '</b><span class="badge ' + cls + '">' + esc(t.status) + ' · ' + t.rounds + ' 轮</span></div></div>';
   }).join('') || '<div style="color:#5b6b7a;font-size:12.5px">还没有任务</div>';
 }
@@ -704,7 +706,11 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
   function nodeText(e){
     const p = safe(e.payload);
     if (e.stage === 'check-tests') return p.ok ? (p.passed + '/' + p.total + ' 通过') : (p.passed + '/' + p.total + ' 未通过');
-    if (e.stage === 'check-review') return p.ok ? '审查通过' : ('驳回：' + ((p.issues || [])[0] || ''));
+    if (e.stage === 'check-review') {
+      const checks = p.checks || [];
+      const tally = checks.length ? ' · 附加用例 ' + checks.filter(c => c.ok).length + '/' + checks.length : '';
+      return (p.ok ? '审查通过' : '驳回') + tally + (p.ok ? '' : '：' + (p.issues || []).join('；'));
+    }
     if (e.stage === 'check-static') return p.ok ? '通过' : ('问题：' + ((p.issues || [])[0] || ''));
     if (e.stage === 'act') return p.result === 'accepted' ? '接受，写入缓存' : '打回，带意见重来';
     if (e.stage === 'do') return '第 ' + (p.round || '?') + ' 轮';
@@ -721,8 +727,8 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
       if (!rows.length) { box.innerHTML = '<div class="empty">提交任务后，这里会显示它每一步在想什么、卡在哪。</div>'; return; }
       box.innerHTML = rows.map(e => {
         const cls = nodeClass(e), t = nodeText(e);
-        return '<div class="node ' + cls + '"><div class="dot">' + (cls === 'ok' ? '✓' : cls === 'bad' ? '!' : '·') + '</div>' +
-          '<div class="body"><b>' + LABEL[e.stage] + '</b>' + (t ? '<div>' + t + '</div>' : '') + '</div></div>';
+        return '<div class="node ' + cls + '" data-round="' + Number(safe(e.payload).round || 0) + '"><div class="dot">' + (cls === 'ok' ? '✓' : cls === 'bad' ? '!' : '·') + '</div>' +
+          '<div class="body"><b>' + LABEL[e.stage] + '</b>' + (t ? '<div>' + esc(t) + '</div>' : '') + '</div></div>';
       }).join('');
     } catch (e) {}
   }
@@ -747,14 +753,13 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
     const rounds = [...new Set(only.map(e => parseJ(e.payload).round).filter(x => x > 0))].sort((a,b)=>a-b);
     if (!rounds.length) { tip.textContent = '这个任务没有可回放的轮次'; return; }
     const nodes = [...document.querySelectorAll('#chain .node')];
-    const per = Math.max(1, Math.floor(nodes.length / rounds.length));
     let i = 0;
     const step = () => {
       nodes.forEach(n => n.classList.remove('hl'));
       const r = rounds[i];
       badge.textContent = '第 ' + r + ' 轮 / 共 ' + rounds.length + ' 轮';
       badge.classList.remove('hidden');
-      const seg = nodes.slice(i * per, (i + 1) * per);
+      const seg = nodes.filter(n => Number(n.dataset.round) === r);
       seg.forEach(n => n.classList.add('hl'));
       if (seg[0]) seg[0].scrollIntoView({block:'center', behavior:'smooth'});
       tip.textContent = (i === rounds.length - 1) ? '最后一轮：' + r : '正在回放第 ' + r + ' 轮，下一轮自动开始';
@@ -764,8 +769,8 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
         tip.textContent = '回放结束：共 ' + rounds.length + ' 轮';
       }
     };
-    step();
     replayTimer = setInterval(step, 2200);
+    step();
   }
   document.getElementById('replayBtn').onclick = replayRounds;
 
@@ -777,6 +782,9 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
 def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
                 host="127.0.0.1", port=8765) -> ThreadingHTTPServer:
     from .contract import TaskContract, TestCase
+    from .engine import TaskScheduler
+
+    scheduler = TaskScheduler(engine, workers=2)
 
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -926,17 +934,23 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
 
                     tests = tuple(to_case(t) for t in data["tests"])
                     c = TaskContract(
-                        task_id=data.get("task_id") or f"http-{int(time.time()*1000)}",
+                        task_id=data.get("task_id") or f"http-{uuid.uuid4().hex[:16]}",
                         description=str(data["description"]),
                         function_name=str(data["function_name"]),
                         tests=tests,
                         max_rounds=int(data.get("max_rounds", 3)),
                         context_budget_tokens=int(data.get("context_budget_tokens", 2000)),
                     )
-                    c.validate()
+                    priority = data.get("priority", 5)
+                    if type(priority) is not int or not 0 <= priority <= 9:
+                        raise ValueError("priority 必须是 0 至 9 的整数")
+                    scheduler.submit(c, priority=priority, use_cache=not brain.demo)
+                except FileExistsError as e:
+                    return self._json({"error": str(e)}, 409)
+                except queue.Full:
+                    return self._json({"error": "等待队列已满，请稍后重试"}, 429)
                 except Exception as e:  # noqa: BLE001
                     return self._json({"error": str(e)}, 400)
-                threading.Thread(target=lambda: engine.run(c), daemon=True).start()
                 return self._json({"task_id": c.task_id, "status": "queued"}, 202)
             return self._json({"error": "not found"}, 404)
 
@@ -967,4 +981,6 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
         def log_message(self, *a):
             return
 
-    return ThreadingHTTPServer((host, port), H)
+    server = ThreadingHTTPServer((host, port), H)
+    scheduler.start()
+    return server

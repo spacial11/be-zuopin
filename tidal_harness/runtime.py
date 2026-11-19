@@ -332,16 +332,17 @@ class Store:
     # ---- 任务 ----
     def upsert_task(self, task_id: str, digest: str, status: str, rounds: int = 0, detail: Any = None, title: str | None = None) -> None:
         now = time.time()
-        self.conn.execute(
-            """INSERT INTO tasks(task_id,digest,status,rounds,created_at,updated_at,detail,title)
-               VALUES(?,?,?,?,?,?,?,?)
-               ON CONFLICT(task_id) DO UPDATE SET status=excluded.status,
-                 rounds=excluded.rounds, updated_at=excluded.updated_at, detail=excluded.detail,
-                 title=COALESCE(excluded.title, tasks.title)""",
-            (task_id, digest, status, rounds, now, now,
-             json.dumps(detail, ensure_ascii=False) if detail is not None else None, title),
-        )
-        self.conn.commit()
+        with self._db_lock:
+            self.conn.execute(
+                """INSERT INTO tasks(task_id,digest,status,rounds,created_at,updated_at,detail,title)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(task_id) DO UPDATE SET status=excluded.status,
+                     rounds=excluded.rounds, updated_at=excluded.updated_at, detail=excluded.detail,
+                     title=COALESCE(excluded.title, tasks.title)""",
+                (task_id, digest, status, rounds, now, now,
+                 json.dumps(_redact(detail), ensure_ascii=False) if detail is not None else None, title),
+            )
+            self.conn.commit()
 
     def task(self, task_id: str) -> dict | None:
         with self._db_lock:
@@ -425,15 +426,11 @@ def _demo_code(function_name: str) -> str:
 
 
 class ScriptedDemoModel:
-    """演示用：第一轮故意给出错代码，审查也故意驳回一次，用来展示 PDCA 与双门。
-
-    脚本可以换（clean = 一次就过），这样同一套代码既能演示失败路径也能演示成功路径。
-    """
+    """离线候选生成器。fail-first 依次演示运算错误、小数截断和修正。"""
 
     def __init__(self, script: str = "fail-first"):
         self.script = script
         self.coder_calls = 0
-        self.review_calls = 0
 
     def complete(self, messages: list[dict], *, role: str, contract) -> str:
         if role == "planner":
@@ -444,14 +441,13 @@ class ScriptedDemoModel:
                 # 第一轮：把加法写成减法 —— 测试必然不过
                 code = f"def {contract.function_name}(a, b):\n    return a - b\n"
                 return json.dumps({"code": code, "explanation": "先按直觉写一版。"}, ensure_ascii=False)
+            if self.script == "fail-first" and self.coder_calls == 2 and contract.function_name == "add":
+                code = "def add(a, b):\n    return int(a + b)\n"
+                return json.dumps({"code": code, "explanation": "改为相加，但把和转换成了整数。"}, ensure_ascii=False)
             code = f"def {contract.function_name}(a, b):\n    return a + b\n"
-            return json.dumps({"code": code, "explanation": "根据失败用例修正为加法。"}, ensure_ascii=False)
-        # reviewer
-        self.review_calls += 1
-        if self.script == "fail-first" and self.review_calls == 1:
-            return json.dumps({"approve": False, "issues": ["任务要求支持小数，但实现没有显式处理 float 与整数混合的类型分支，属于任务遗漏"]},
-                              ensure_ascii=False)
-        return json.dumps({"approve": True, "issues": []}, ensure_ascii=False)
+            return json.dumps({"code": code, "explanation": "直接返回相加结果，保留小数。"}, ensure_ascii=False)
+        return json.dumps({"approve": False, "issues": ["离线审查规则只覆盖示例 add。其他任务请连接模型审查。"]},
+                          ensure_ascii=False)
 
 class OpenAICompatibleModel:
     """显式的 OpenAI 兼容适配器。凭据只从参数/环境变量来，不从别的客户端里翻。"""

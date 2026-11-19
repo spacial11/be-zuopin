@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import ast
+import itertools
 import json
 import queue
 import re
@@ -18,11 +19,11 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .contract import AgentRegistry, Plan, Planner, TaskContract
-from .runtime import CandidateCache, ContextWindow, Store
+from .contract import AgentRegistry, Plan, Planner, TaskContract, TestCase
+from .runtime import CandidateCache, ContextWindow, ScriptedDemoModel, Store
 from .inner import RoundInner, facts_from_contract
 
 # ---------------------------------------------------------------- 受限 AST
@@ -212,7 +213,22 @@ class Reviewer:
         self.model = model
         self.agent_id = agent_id
 
-    def review(self, contract: TaskContract, code: str, test_summary: str) -> tuple[bool, list[str]]:
+    def review(self, contract: TaskContract, code: str, test_summary: str) -> tuple[bool, list[str], list[dict]]:
+        if isinstance(self.model, ScriptedDemoModel) and contract.function_name == "add":
+            cases = (TestCase((0.5, 0.25), 0.75), TestCase((-2, 0.5), -1.5))
+            report = run_tests(code, replace(contract, tests=cases))
+            evidence = [
+                {"args": list(case.args), **result}
+                for case, result in zip(cases, report.details)
+            ]
+            issues = [
+                f"add({row['args'][0]}, {row['args'][1]}) 应得 {row['expected']}，实际 {row['got']}"
+                if "got" in row else row["error"]
+                for row in evidence if not row["ok"]
+            ]
+            if report.error:
+                issues.append(report.error)
+            return report.ok, issues, evidence
         prompt = (
             "你是独立审查者，不是写代码的人。请只根据任务要求与下面的候选实现判断它是否满足要求。\n"
             f"任务：{contract.description}\n函数名：{contract.function_name}\n"
@@ -224,7 +240,8 @@ class Reviewer:
         out = self.model.complete(
             [{"role": "user", "content": prompt}], role="reviewer", contract=contract
         )
-        return parse_review(out)
+        approved, issues = parse_review(out)
+        return approved, issues, []
 
 
 class Engine:
@@ -248,7 +265,7 @@ class Engine:
         arr.append(first)
         self._openings = arr[-10:]
 
-    def run(self, contract: TaskContract) -> RunResult:
+    def run(self, contract: TaskContract, use_cache: bool = True) -> RunResult:
         contract.validate()
         started = time.time()
         digest = contract.digest()
@@ -261,7 +278,7 @@ class Engine:
 
         # 缓存：命中也要用当前测试重跑一遍
         ckey = CandidateCache.key_for(digest, contract.model, contract.tenant)
-        entry = self.cache.get(ckey)
+        entry = self.cache.get(ckey) if use_cache else None
         if entry:
             t = run_tests(entry.code, contract)
             if t.ok:
@@ -272,7 +289,10 @@ class Engine:
             self.cache.evict(ckey)
             self.store.event(contract.task_id, "cache-stale", {"reason": "命中但当前测试不过，已淘汰"})
 
-        reviewer = Reviewer(self.model, plan.reviewer)
+        model = self.model
+        if isinstance(model, ScriptedDemoModel):
+            model = ScriptedDemoModel(model.script)
+        reviewer = Reviewer(model, plan.reviewer)
         coder_spec = self.registry.get(plan.coder)
         history: list[dict] = []
         feedback = ""
@@ -296,7 +316,7 @@ class Engine:
                               note="mood 字段在本版本恒为空：不做情绪系统，见白皮书 §6")
             self.store.event(contract.task_id, "inner", rich.to_json())
 
-            out = self.model.complete(built.messages, role="coder", contract=contract)
+            out = model.complete(built.messages, role="coder", contract=contract)
             code, explanation = parse_candidate(out)
             history.append({"seq": len(history) + 1, "role": "assistant", "content": out[:500]})
 
@@ -309,14 +329,15 @@ class Engine:
                 tests = run_tests(code, contract)
             self.store.event(contract.task_id, "check-tests",
                              {"round": rnd, "ok": tests.ok, "passed": tests.passed,
-                              "total": tests.total, "error": tests.error})
+                              "total": tests.total, "error": tests.error,
+                              "candidate": code, "details": tests.details})
 
             review_ok, review_issues = False, []
             if static.ok and tests.ok:
                 summary = f"{tests.passed}/{tests.total} 通过"
-                review_ok, review_issues = reviewer.review(contract, code, summary)
+                review_ok, review_issues, evidence = reviewer.review(contract, code, summary)
                 self.store.event(contract.task_id, "check-review",
-                                 {"round": rnd, "ok": review_ok, "issues": review_issues})
+                                 {"round": rnd, "ok": review_ok, "issues": review_issues, "checks": evidence})
 
             self._note_opening(code)
             rec = RoundRecord(rnd, code, explanation, static.ok, static.issues,
@@ -359,13 +380,26 @@ class TaskScheduler:
         self.engine = engine
         self.workers = max(1, workers)
         self.log = log
-        self.q: queue.PriorityQueue = queue.PriorityQueue()
+        self.q: queue.PriorityQueue = queue.PriorityQueue(maxsize=64)
+        self._sequence = itertools.count()
+        self._submit_lock = threading.Lock()
         self.cancelled: set[str] = set()
         self.results: dict[str, RunResult] = {}
         self._threads: list[threading.Thread] = []
 
-    def submit(self, contract: TaskContract, priority: int = 5) -> None:
-        self.q.put((priority, time.time(), contract))
+    def submit(self, contract: TaskContract, priority: int = 5, use_cache: bool = True) -> None:
+        contract.validate()
+        if not 0 <= priority <= 9:
+            raise ValueError("优先级取值为 0 至 9")
+        with self._submit_lock:
+            if self.engine.store.task(contract.task_id):
+                raise FileExistsError("任务编号已存在，请使用新的编号")
+            if self.q.full():
+                raise queue.Full
+            self.engine.store.upsert_task(contract.task_id, contract.digest(), "queued", title=contract.description)
+            self.engine.store.event(contract.task_id, "scheduled",
+                                    {"priority": priority, "workers": self.workers})
+            self.q.put_nowait((priority, next(self._sequence), contract, use_cache))
 
     def cancel(self, task_id: str) -> None:
         self.cancelled.add(task_id)
@@ -378,22 +412,23 @@ class TaskScheduler:
 
     def _loop(self) -> None:
         while True:
-            item = self.q.get()
-            if item is None:
-                return
-            _, _, contract = item
-            if contract.task_id in self.cancelled:
-                self.engine.store.event(contract.task_id, "cancelled")
-                continue
+            _, _, contract, use_cache = self.q.get()
             try:
-                self.engine.run(contract)
+                if contract.task_id in self.cancelled:
+                    self.engine.store.event(contract.task_id, "cancelled")
+                    self.engine.store.upsert_task(contract.task_id, contract.digest(), "cancelled")
+                    self.cancelled.discard(contract.task_id)
+                else:
+                    self.engine.run(contract, use_cache=use_cache)
             except Exception as e:  # noqa: BLE001
-                self.log(f"任务 {contract.task_id} 异常：{e}")
+                reason = f"执行异常（{type(e).__name__}）"
+                self.engine.store.event(contract.task_id, "error", {"reason": reason})
+                self.engine.store.upsert_task(contract.task_id, contract.digest(), "failed",
+                                              detail={"reason": reason})
+                self.log(f"任务 {contract.task_id}：{reason}")
+            finally:
+                self.q.task_done()
 
     def join(self, timeout: float | None = None) -> None:
-        deadline = time.time() + timeout if timeout else None
-        while not self.q.empty():
-            if deadline and time.time() > deadline:
-                return
-            time.sleep(0.05)
-        time.sleep(0.2)
+        with self.q.all_tasks_done:
+            self.q.all_tasks_done.wait_for(lambda: self.q.unfinished_tasks == 0, timeout)

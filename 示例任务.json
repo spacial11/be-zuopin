@@ -1,0 +1,12 @@
+{
+  "task_id": "demo-add",
+  "description": "实现一个函数 add(a, b)，返回两数之和；要求支持负数与小数。",
+  "function_name": "add",
+  "tests": [
+    { "args": [1, 2], "expected": 3 },
+    { "args": [-1, 5], "expected": 4 },
+    { "args": [0.5, 0.5], "expected": 1.0 }
+  ],
+  "max_rounds": 3,
+  "context_budget_tokens": 2000
+}

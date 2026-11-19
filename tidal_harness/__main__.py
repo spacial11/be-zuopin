@@ -57,7 +57,7 @@ def print_events(engine: Engine, task_id: str) -> None:
 
 def cmd_demo(args) -> int:
     engine = build_engine(args.script)
-    c = demo_contract(f"demo-{int(time.time())}")
+    c = demo_contract(f"demo-{time.time_ns()}")
     print(f"== 任务 {c.task_id} ==")
     print(f"   {c.description}")
     print(f"   测试 {len(c.tests)} 条，最多 {c.max_rounds} 轮，预算 {c.context_budget_tokens} tokens\n")
@@ -71,7 +71,7 @@ def cmd_demo(args) -> int:
         gates = []
         gates.append(f"静态{'过' if r.static_ok else '挂'}")
         gates.append(f"测试{'过' if r.tests_ok else '挂'}")
-        gates.append(f"审查{'过' if r.review_ok else '驳'}")
+        gates.append(("审查通过" if r.review_ok else "审查驳回") if r.tests_ok else "审查未执行")
         print(f"   第 {r.round} 轮：{' / '.join(gates)}" + (f"  意见：{'；'.join(r.review_issues)}" if r.review_issues else ""))
     if result.rounds and result.rounds[-1].accepted:
         print(f"\n   最终代码：\n{indent(result.rounds[-1].code, '   ')}")
@@ -172,15 +172,22 @@ def make_handler(engine: Engine):
 
 def cmd_serve(args) -> int:
     from .web import ChatBrain, ChatStore, Hub, bridge_events, make_server
+    from .runtime import OpenAICompatibleModel
 
     engine = build_engine(args.script)
+    base_url = None if args.demo else os.environ.get("TIDAL_MODEL_BASE")
+    if base_url:
+        engine.model = OpenAICompatibleModel(base_url, os.environ.get("TIDAL_MODEL_KEY", ""),
+                                             os.environ.get("TIDAL_MODEL_NAME", "deepseek-chat"))
     hub = Hub()
     chat = ChatStore(os.path.join(DATA_DIR, "tidal.db"))
     bridge_events(engine, hub, chat, demo=args.demo)
-    brain = ChatBrain(engine, demo=args.demo)
+    brain = ChatBrain(engine, demo=not bool(base_url))
 
     srv = make_server(engine, hub, chat, brain, host=args.host, port=args.port)
-    print(f"面板已启动： http://{args.host}:{args.port}   (Ctrl+C 退出)")
+    if args.port == 0:
+        print(f"READY {srv.server_port}", flush=True)
+    print(f"面板已启动： http://{args.host}:{srv.server_port}   (Ctrl+C 退出)")
     print(f"数据目录： {DATA_DIR}")
     try:
         srv.serve_forever()
