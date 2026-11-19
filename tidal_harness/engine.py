@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import itertools
 import json
+import os
 import queue
 import re
 import subprocess
@@ -23,7 +24,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .contract import AgentRegistry, Plan, Planner, TaskContract, TestCase
-from .runtime import CandidateCache, ContextWindow, ScriptedDemoModel, Store
+from .runtime import CandidateCache, ContextWindow, ModelError, OpenAICompatibleModel, ScriptedDemoModel, Store
 from .inner import RoundInner, facts_from_contract
 
 # ---------------------------------------------------------------- 受限 AST
@@ -132,9 +133,10 @@ def run_tests(code: str, contract: TaskContract, timeout: float = 10.0) -> TestR
     }
     try:
         proc = subprocess.run(
-            [sys.executable, "-I", "-c", RUNNER],
+            [sys.executable, "-I", "-X", "utf8", "-c", RUNNER],
             input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             capture_output=True, timeout=timeout,
+            env={key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ},
         )
     except subprocess.TimeoutExpired:
         return TestReport(False, 0, len(contract.tests), error=f"执行超时（>{timeout}s）")
@@ -277,7 +279,11 @@ class Engine:
                                                     "order": list(plan.order), "reason": plan.reason})
 
         # 缓存：命中也要用当前测试重跑一遍
-        ckey = CandidateCache.key_for(digest, contract.model, contract.tenant)
+        model = self.model
+        cache_model = contract.model
+        if isinstance(model, OpenAICompatibleModel):
+            cache_model = json.dumps([contract.model, model.url, model.model])
+        ckey = CandidateCache.key_for(digest, cache_model, contract.tenant)
         entry = self.cache.get(ckey) if use_cache else None
         if entry:
             t = run_tests(entry.code, contract)
@@ -289,7 +295,6 @@ class Engine:
             self.cache.evict(ckey)
             self.store.event(contract.task_id, "cache-stale", {"reason": "命中但当前测试不过，已淘汰"})
 
-        model = self.model
         if isinstance(model, ScriptedDemoModel):
             model = ScriptedDemoModel(model.script)
         reviewer = Reviewer(model, plan.reviewer)
@@ -299,11 +304,17 @@ class Engine:
         rounds: list[RoundRecord] = []
         revision = 1
 
+        public_cases = json.dumps([t.to_json() for t in contract.tests], ensure_ascii=False)
+        coder_task = (
+            f"{contract.description}\n函数名：{contract.function_name}\n公开测试用例：{public_cases}\n"
+            "请实现可独立运行的 Python 纯函数。按 args 的顺序接收位置参数，返回 expected 对应的结果。"
+            "请勿导入模块、访问文件或网络。"
+        )
         for rnd in range(1, contract.max_rounds + 1):
             window = ContextWindow(contract.context_budget_tokens)
             built = window.build(
                 system=coder_spec.instruction,
-                task=contract.description,
+                task=coder_task,
                 current=feedback or "（第一轮，没有反馈）",
                 history=history,
             )
@@ -421,7 +432,7 @@ class TaskScheduler:
                 else:
                     self.engine.run(contract, use_cache=use_cache)
             except Exception as e:  # noqa: BLE001
-                reason = f"执行异常（{type(e).__name__}）"
+                reason = str(e) if isinstance(e, ModelError) else f"执行异常（{type(e).__name__}）"
                 self.engine.store.event(contract.task_id, "error", {"reason": reason})
                 self.engine.store.upsert_task(contract.task_id, contract.digest(), "failed",
                                               detail={"reason": reason})

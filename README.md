@@ -1,6 +1,6 @@
-# ye队作品 · 可验证的多 Agent 编排
+# be队作品 · 可验证的多 Agent 编排
 
-第五届“未来杯”创新大赛赛题一，ye队。这个原型为小型 Python 纯函数任务串联规划、编码、测试和审查。每轮公开测试、独立审查、候选实现和裁决可在本地面板回放。
+第五届“未来杯”创新大赛赛题一，be队。这个原型为小型 Python 纯函数任务串联规划、编码、测试和审查。每轮公开测试、独立审查、候选实现和裁决可在本地面板回放。
 
 ## 本机复现
 
@@ -11,7 +11,9 @@ python -m tidal_harness demo
 python -m tidal_harness serve --demo
 ```
 
-打开 http://127.0.0.1:8765，点击「进入演示」及「开始执行」。数据默认写入当前目录的 data 下，环境变量 TIDAL_DATA 可指定其他目录。
+打开 http://127.0.0.1:8765，选择「可复现离线演示」，再点击「开始执行」。数据默认写入当前目录的 data 下，环境变量 TIDAL_DATA 可指定其他目录。
+
+参赛包还提供 DeepSeek 在线入口。用包内 Windows 启动器或在「演示/demo」下起服务时，后端从该目录读取 deepseek-competition.key。在线生成和审查使用 DeepSeek 官方 API 的 deepseek-flash。自行从源码运行时，密钥文件可放在 tidal_harness 的上一级目录，或在控制台配置自己的兼容接口。真实密钥仅供获准评审的本地参赛包使用。
 
 ## 评审可以复核什么
 
@@ -23,7 +25,7 @@ python -m tidal_harness serve --demo
 | 2 | int(a + b) | 3/3 | 0、-1，期望 0.75、-1.5 | 驳回 |
 | 3 | a + b | 3/3 | 0.75、-1.5 | 接受 |
 
-脚本化候选和预先选定的反例用于稳定重现流程。公开测试、反例执行、裁决和事件落盘都由程序实际完成。离线样例的能力范围是加法函数。真实模型适配器支持兼容 chat/completions 的服务，需通过控制台配置，并由用户承担所选服务的费用。
+脚本化候选和预先选定的反例用于稳定重现流程。公开测试、反例执行、裁决和事件落盘都由程序实际完成。离线样例的能力范围是加法函数。在线模式由模型生成候选和审查意见，用例执行仍在本机完成。模型请求使用所选密钥所属账号的额度。
 
 ## 代码入口
 
@@ -39,7 +41,7 @@ python -m tidal_harness serve --demo
 
 Web 接口 POST /api/tasks 接收 description、function_name 和 tests，支持可选的 priority（0–9，数字越小优先级越高）、max_rounds 和 task_id。默认两个工作线程，最多 64 个任务等待，优先级相同按入队顺序处理。POST 成功返回 202 和任务 ID，GET /api/tasks/{任务ID} 返回终态与逐轮事件。离线面板每次重新运行示例，以保留每一轮可回放的数据。
 
-参赛包的 Python 源码与本次提交对应。项目仓库为 https://github.com/spacial11/ye-zuopin 。项目自编源码使用本目录的 MIT 许可证。演示包内 CPython 与 Windows 运行组件分别沿用各自许可证。
+公开项目仓库为 https://github.com/spacial11/ye-zuopin 。随包源码包含本次交付新加的 DeepSeek 评审入口。项目自编源码使用本目录的 MIT 许可证。演示包内 CPython 与 Windows 运行组件分别沿用各自许可证。
 
 ## 历史版本
 

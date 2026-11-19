@@ -8,7 +8,7 @@ using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
 // ============================================================
-//  ye队作品.exe —— 内嵌浏览器窗口的演示程序
+//  be队作品.exe —— 内嵌浏览器窗口的演示程序
 //
 //  双击后不会打开外部浏览器：
 //    1. 后台启动 demo\runtime\python.exe 提供的本地服务
@@ -29,7 +29,7 @@ static class Launcher
         if (!File.Exists(python))
         {
             MessageBox.Show("找不到 demo\\runtime\\python.exe。\n\n请确认解压时保留了 demo 目录的完整结构。",
-                "ye队作品", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                "be队作品", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 
@@ -37,7 +37,7 @@ static class Launcher
         Application.SetCompatibleTextRenderingDefault(false);
 
         var form = new Form();
-        form.Text = "ye队作品 · 可验证的多 Agent 编排";
+        form.Text = "be队作品 · 可验证的多 Agent 编排";
         var wa = Screen.PrimaryScreen.WorkingArea;
         form.Width = Math.Min(1400, (int)(wa.Width * 0.92));
         form.Height = Math.Min(920, (int)(wa.Height * 0.92));
@@ -72,7 +72,7 @@ static class Launcher
                     !Int32.TryParse(ready.Substring(6), out port) || port < 1 || port > 65535)
                     throw new Exception("本地服务启动失败，可尝试启动演示.cmd");
 
-                var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Path.GetTempPath(), "ye-webview2"));
+                var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Path.GetTempPath(), "be-webview2"));
                 await web.EnsureCoreWebView2Async(env);
 
                 // 外部链接交给系统浏览器，避免在演示窗口里跳出站点

@@ -8,13 +8,15 @@
 
 from __future__ import annotations
 
+import http.client
 import json
-import re
 import os
+import re
 import sqlite3
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
@@ -449,34 +451,89 @@ class ScriptedDemoModel:
         return json.dumps({"approve": False, "issues": ["离线审查规则只覆盖示例 add。其他任务请连接模型审查。"]},
                           ensure_ascii=False)
 
+class _ModelRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """带凭据的请求只接受同源重定向，协议、主机和有效端口都必须一致。"""
+
+    @staticmethod
+    def _origin(url: str) -> tuple:
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port if parts.port is not None else {"http": 80, "https": 443}.get(parts.scheme)
+        return parts.scheme, parts.hostname, port
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.has_header("Authorization") and self._origin(req.full_url) != self._origin(newurl):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class OpenAICompatibleModel:
     """显式的 OpenAI 兼容适配器。凭据只从参数/环境变量来，不从别的客户端里翻。"""
 
     def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 60.0):
-        self.url = base_url.rstrip("/") + "/chat/completions"
+        try:
+            parts = urllib.parse.urlsplit(base_url.strip())
+            if parts.scheme not in ("http", "https") or not parts.hostname or parts.username is not None:
+                raise ValueError
+            origin = _ModelRedirectHandler._origin(parts.geturl())
+        except ValueError:
+            raise ModelError("模型接口地址无效，请检查服务地址。") from None
+        path = parts.path.rstrip("/")
+        if not path.endswith("/chat/completions"):
+            path += "/chat/completions"
+        self.url = urllib.parse.urlunsplit(parts._replace(path=path, fragment=""))
+        self._deepseek = origin == ("https", "api.deepseek.com", 443)
+        self._opener = urllib.request.build_opener(_ModelRedirectHandler())
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
 
     def complete(self, messages: list[dict], *, role: str, contract: Any) -> str:
-        body = json.dumps({
+        payload = {
             "model": self.model,
-            "messages": messages,
+            "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
             "temperature": 0.2 if role != "coder" else 0.5,
             "stream": False,
-        }).encode("utf-8")
+        }
+        if self._deepseek:
+            payload["thinking"] = {"type": "disabled"}
+            payload["max_tokens"] = {"coder": 2048, "reviewer": 768}.get(role, 512)
+            if role in ("coder", "reviewer"):
+                payload["response_format"] = {"type": "json_object"}
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(self.url, data=body, method="POST")
         req.add_header("content-type", "application/json")
         if self.api_key:
             req.add_header("authorization", f"Bearer {self.api_key}")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with self._opener.open(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            raise ModelError(f"模型 HTTP {e.code}: {e.read()[:200]!r}") from e
-        except Exception as e:  # noqa: BLE001
-            raise ModelError(f"模型调用失败：{e}") from e
+            e.close()
+            reason = {
+                400: "请求参数有误，请检查模型名称和接口配置。",
+                401: "认证失败，请检查 API Key 是否有效。",
+                402: "账户余额不足，请检查模型服务账户的余额。",
+                403: "访问被拒绝，请检查密钥的模型权限。",
+                404: "模型或接口不存在，请检查服务地址和模型名称。",
+                408: "网络请求超时，请稍后重试。",
+                422: "模型参数不受支持，请检查接口配置。",
+                429: "请求频率超限，请稍后重试。",
+                504: "模型网关超时，请稍后重试。",
+            }.get(e.code, "请检查模型服务状态和接口地址。")
+            if 300 <= e.code < 400:
+                reason = "接口返回重定向，请直接填写最终的模型服务地址。"
+            raise ModelError(f"模型服务 HTTP {e.code}，{reason}") from None
+        except (urllib.error.URLError, OSError, http.client.HTTPException):
+            raise ModelError("模型网络连接失败或超时，请检查网络和服务地址。") from None
+        except ValueError:
+            raise ModelError("模型请求或响应格式无效，请检查接口配置。") from None
         try:
-            return data["choices"][0]["message"]["content"]
-        except Exception as e:  # noqa: BLE001
-            raise ModelError(f"响应结构不对：{data!r}") from e
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            raise ModelError("模型响应缺少回答内容，请检查接口兼容性。") from None
+        if choice.get("finish_reason") == "length":
+            raise ModelError("模型回复已达到长度上限，请缩短任务或分步提交。")
+        if not isinstance(content, str) or not content.strip():
+            raise ModelError("模型返回空回答或不支持的内容格式，请重试。")
+        return content

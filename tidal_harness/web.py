@@ -9,12 +9,16 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import queue
 import sqlite3
 import threading
 import time
 import uuid
+from dataclasses import replace
+from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import predict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -160,13 +164,13 @@ class ChatBrain:
             tasks = self.engine.store.tasks(3)
             ctx = "；".join(f"{x['task_id']}={x['status']}" for x in tasks) or "暂无任务"
             out = m.complete([
-                {"role": "system", "content": "你是 ye队作品 面板里的助手。回答简短、具体，"
+                {"role": "system", "content": "你是 be队作品 面板里的助手。回答简短、具体，"
                                               "不要客服腔。可以引用任务状态。"},
                 {"role": "user", "content": f"当前任务：{ctx}\n\n用户说：{t}"},
-            ], role="reviewer", contract=None)
+            ], role="chat", contract=None)
             return out.strip()[:500]
         except ModelError as e:
-            return f"模型调用失败：{e}"
+            return f"模型调用失败：{e} 可从顶部「切换模型」进入离线演示。"
 
 
 # ============================================================ 任务事件 → 插话
@@ -197,8 +201,8 @@ def bridge_events(engine, hub: Hub, chat: ChatStore, demo: bool = True):
         previous = engine.store.task(task_id)
         original_upsert(task_id, digest, status, rounds, detail, title=title)
         if status in ("succeeded", "failed") and (not previous or previous.get("status") != status):
-            text = ("搞定了：两道门都过，结果已经写进缓存。" if status == "succeeded"
-                    else f"任务失败：{rounds} 轮都没过，我把原因记下来了。")
+            text = ("任务已完成，结果可在阶段事件中查看。" if status == "succeeded"
+                    else "任务未完成。" + (detail or {}).get("reason", "请查看阶段事件。"))
             msg = chat.add("assistant", text, kind="interject")
             hub.publish({"type": "chat", "message": msg})
         hub.publish({"type": "task-update", "task_id": task_id, "status": status, "rounds": rounds})
@@ -228,7 +232,7 @@ def interjection_for(stage: str, payload: dict, task_id: str) -> str:
 HTML = r"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ye队作品 · 控制台</title>
+<title>be队作品 · 控制台</title>
 <style>
 :root{
   --navy:#0f2a5f; --blue:#1d4ed8; --blue-soft:#eaf1fe;
@@ -258,8 +262,8 @@ main{display:grid;grid-template-columns:1.08fr .92fr;gap:18px;padding:18px 26px 
 
 /* 表单 */
 input,textarea,button{font:inherit}
-input[type=text],textarea{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 11px;outline:none;background:#fbfdff;transition:border-color .15s}
-input[type=text]:focus,textarea:focus{border-color:#9dbcff;background:#fff}
+input[type=text],input[type=password],textarea{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 11px;outline:none;background:#fbfdff;transition:border-color .15s}
+input[type=text]:focus,input[type=password]:focus,textarea:focus{border-color:#9dbcff;background:#fff}
 button{border:0;border-radius:9px;padding:9px 16px;background:var(--blue);color:#fff;cursor:pointer;font-weight:600;white-space:nowrap;transition:filter .15s}
 button:hover{filter:brightness(1.06)}
 button.ghost{background:var(--blue-soft);color:var(--navy)}
@@ -321,6 +325,7 @@ table.inner td.mono{font-family:Consolas,monospace;font-size:11px;color:#3d4b5c}
 code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
 
 @media (max-width:980px){main{grid-template-columns:1fr}.topbar{padding:12px 16px}main{padding:14px 16px 24px}}
+@media (max-width:600px){.topbar,.top-actions{flex-wrap:wrap;gap:8px}.top-actions button{padding:6px 10px}}
 
 /* 开始页：白底 + 水流 */
 #landing{position:fixed;inset:0;z-index:80;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden}
@@ -375,14 +380,15 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
 <body>
 <header class="topbar">
   <div class="brand">
-    <div class="logo">ye</div>
+    <div class="logo">be</div>
     <div>
-      <div class="title">ye队作品</div>
+      <div class="title">be队作品</div>
       <div class="sub">可验证的多 Agent 编排 · 控制台</div>
     </div>
   </div>
   <div class="top-actions">
-    <span class="pill">演示模式</span>
+    <span id="modelMode" class="pill" aria-live="polite">读取运行模式…</span>
+    <button id="chooseMode" class="ghost">切换模型</button>
     <button id="helpBtn" class="ghost">使用说明</button>
   </div>
 </header>
@@ -454,7 +460,7 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
       <h4 style="margin:0 0 8px;font-size:14px;color:#0f2a5f">怎么判断它没在糊弄你</h4>
       <div class="steps">
         <div class="step"><div class="n">A</div><div class="t"><b>看第 2 轮</b>
-          <div>第 2 轮对加法结果取整，公开测试仍有 3/3 通过。独立审查另测两个小数反例，记录实际输出与期望值。</div></div></div>
+          <div>可复现离线演示的第 2 轮对加法结果取整，公开测试仍有 3/3 通过。独立审查另测两个小数反例，记录实际输出与期望值。在线模式的轮次取决于模型的实际回答。</div></div></div>
         <div class="step"><div class="n">B</div><div class="t"><b>看决策记录的事实锁定列</b>
           <div>那些数字是从任务契约里用代码抽出来的，不是模型自己说的。</div></div></div>
         <div class="step"><div class="n">C</div><div class="t"><b>看事件流</b>
@@ -475,13 +481,16 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
 <div id="landing">
   <div class="waves"><span></span><span></span><span></span></div>
   <div class="landing-inner">
-    <h1>ye队作品</h1>
+    <h1>be队作品</h1>
     <p class="tag">可验证的多 Agent 编排</p>
     <p class="quote">Agent 说“做完了”不算数，过了两道独立的门才算数。</p>
     <div class="landing-actions">
-      <button id="enterDemo">进入演示</button>
+      <!-- bundled-mode-button -->
+      <button id="enterDemo" class="ghost">可复现离线演示</button>
       <button id="enterKey" class="ghost">用我的 API Key</button>
     </div>
+    <p id="modeStatus" role="status"></p>
+    <button id="keepMode" class="ghost" hidden>返回控制台</button>
   </div>
   <div class="landing-ver" id="verLine">v1.0 · 测试版</div>
 </div>
@@ -494,9 +503,9 @@ code{background:#f1f5fb;border:1px solid var(--line);border-radius:5px;padding:1
     </div>
     <div class="pb">
       <div class="row"><input id="kBase" type="text" placeholder="接口地址，例如 https://api.deepseek.com/v1"></div>
-      <div class="row"><input id="kKey" type="text" placeholder="API Key（只保存在本机浏览器）"></div>
-      <div class="row"><input id="kModel" type="text" placeholder="模型名，例如 deepseek-chat"></div>
-      <p class="hint" style="margin-top:10px">会发送到本机后端使用，不会写进仓库或日志；日志落盘前已做脱敏。</p>
+      <div class="row"><input id="kKey" type="password" autocomplete="off" placeholder="你的 API Key"></div>
+      <div class="row"><input id="kModel" type="text" placeholder="模型名，例如 deepseek-flash"></div>
+      <p class="hint" style="margin-top:10px">本机服务在内存中使用你的 Key，模型请求会发送到你填写的接口地址。</p>
     </div>
     <div class="pf">
       <button id="keyCancel" class="ghost">取消</button>
@@ -537,7 +546,7 @@ async function loadInner(id){
       const facts = (p.facts_locked || []).join(', ') || '—';
       const avoid = (p.avoid_openings || []).length;
       const ch = (p.channels && p.channels.image ? '图' : '') + (p.channels && p.channels.voice ? '音' : '') || '—';
-      html += '<tr><td>' + p.round + '</td><td class="mono">' + facts + '</td><td>' + avoid + ' 条</td><td>' + ch + '</td><td>' + (p.context_tokens || 0) + ' tok</td></tr>';
+      html += '<tr><td>' + esc(p.round) + '</td><td class="mono">' + esc(facts) + '</td><td>' + avoid + ' 条</td><td>' + ch + '</td><td>' + esc(p.context_tokens || 0) + ' tok</td></tr>';
     });
     html += '</table>';
     $('#innerTable').innerHTML = html;
@@ -588,8 +597,12 @@ async function loadTasks(){
   $('#tasks').innerHTML = d.tasks.map(t => {
     const cls = t.status === 'succeeded' ? 'ok' : (t.status === 'failed' ? 'fail' : '');
     const title = (t.title || '').slice(0, 60) || (t.task_id || '');
+    let reason = '';
+    if (t.status === 'failed') { try { reason = JSON.parse(t.detail || '{}').reason || ''; } catch (_) {} }
+    const status = {queued:'排队中',running:'运行中',succeeded:'成功',failed:'失败',interrupted:'已中断',cancelled:'已取消'}[t.status] || t.status;
     return '<div class="task" data-id="' + esc(t.task_id) + '"><div class="top"><b>' + esc(title) +
-      '</b><span class="badge ' + cls + '">' + esc(t.status) + ' · ' + t.rounds + ' 轮</span></div></div>';
+      '</b><span class="badge ' + cls + '">' + esc(status) + ' · ' + esc(t.rounds) + ' 轮</span></div>' +
+      (reason ? '<div>' + esc(reason) + '</div>' : '') + '</div>';
   }).join('') || '<div style="color:#5b6b7a;font-size:12.5px">还没有任务</div>';
 }
 async function loadEvents(id){
@@ -611,15 +624,31 @@ $('#run').onclick = async () => {
 };
 $('#send').onclick = async () => {
   const t = $('#msg').value.trim(); if (!t) return;
-  $('#msg').value = ''; addMsg({role:'user', kind:'chat', text:t});
-  const r = await fetch('/api/chat', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({text:t})});
-  const d = await r.json(); if (d.message) addMsg(d.message);
+  $('#msg').value = '';
+  try {
+    const r = await fetch('/api/chat', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({text:t})});
+    if (!r.ok) throw new Error((await r.json()).error || '发送失败');
+  } catch (e) { $('#msg').value = t; alert(e.message); }
 };
 $('#msg').addEventListener('keydown', e => { if (e.key === 'Enter') $('#send').click(); });
 $('#interject').onchange = loadChat;
 const es = new EventSource('/api/stream');
+function displayMode(d) {
+  const label = {offline:'可复现离线', deepseek:'DeepSeek 在线', custom:'自定义在线'}[d.mode];
+  if (!label) return;
+  $('#modelMode').textContent = label + (d.mode === 'offline' ? '' : ' · ' + d.model);
+  if (d.mode !== 'offline') $('#keepMode').hidden = false;
+}
+async function readMode() {
+  try {
+    const r = await fetch('/api/mode');
+    if (r.ok) displayMode(await r.json());
+  } catch (_) { $('#modelMode').textContent = '服务连接中断'; }
+}
+es.onopen = readMode;
 es.onmessage = ev => {
   const d = JSON.parse(ev.data);
+  if (d.type === 'mode') readMode();
   if (d.type === 'chat') addMsg(d.message);
   if (d.type === 'task' || d.type === 'task-update') { loadTasks(); loadEvents(d.task_id); loadSuggestions(); loadInner(d.task_id); loadMetrics(); }
 };
@@ -632,9 +661,33 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
 
   // 开始页
   const land = $id('landing');
-  $id('enterDemo').onclick = () => land.classList.add('hidden');
+  readMode();
+  $id('chooseMode').onclick = () => {
+    $id('modeStatus').textContent = '';
+    $id('keepMode').hidden = false;
+    land.classList.remove('hidden');
+  };
+  $id('keepMode').onclick = () => land.classList.add('hidden');
+  async function enterMode(mode) {
+    const controls = land.querySelectorAll('button');
+    controls.forEach(b => b.disabled = true);
+    $id('modeStatus').textContent = '正在切换…';
+    try {
+      const r = await fetch('/api/mode', {method:'POST', headers:{'content-type':'application/json'},
+        body:JSON.stringify({mode})});
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || '切换失败，请重试。');
+      displayMode(d); land.classList.add('hidden');
+      $id('modeStatus').textContent = '';
+    } catch (e) { $id('modeStatus').textContent = e.message; }
+    finally { controls.forEach(b => b.disabled = false); }
+  }
+  $id('enterDemo').onclick = () => enterMode('offline');
+  if ($id('enterDeepSeek')) $id('enterDeepSeek').onclick = () => enterMode('deepseek');
   $id('enterKey').onclick = () => { land.classList.add('hidden'); $id('apikey').classList.remove('hidden'); };
-  $id('keyCancel').onclick = () => $id('apikey').classList.add('hidden');
+  $id('keyCancel').onclick = () => {
+    $id('kKey').value = ''; $id('apikey').classList.add('hidden'); land.classList.remove('hidden');
+  };
   $id('keySave').onclick = async () => {
     const base = $id('kBase').value.trim(), key = $id('kKey').value.trim(), model = $id('kModel').value.trim();
     if (!base || !key) { alert('接口地址和 Key 都要填'); return; }
@@ -642,7 +695,7 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
       const r = await fetch('/api/config', {method:'POST', headers:{'content-type':'application/json'},
         body: JSON.stringify({base, key, model})});
       const d = await r.json();
-      if (d.ok) { $id('apikey').classList.add('hidden'); alert('已保存，接下来的任务会用你的模型跑。'); }
+      if (r.ok) { $id('kKey').value = ''; displayMode(d); $id('apikey').classList.add('hidden'); }
       else alert('保存失败：' + (d.error || '未知错误'));
     } catch (e) { alert('保存失败：' + e.message); }
   };
@@ -694,10 +747,11 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
   const LABEL = {
     queued:'任务入队', plan:'规划：拆步骤与验收标准', do:'生成候选代码',
     inner:'记录本轮约束', 'check-static':'静态检查（AST 白名单）',
-    'check-tests':'确定性测试', 'check-review':'独立审查', act:'裁决'
+    'check-tests':'确定性测试', 'check-review':'独立审查', act:'裁决', error:'执行失败'
   };
   function nodeClass(e){
     const p = safe(e.payload);
+    if (e.stage === 'error') return 'bad';
     if (e.stage === 'act') return p.result === 'accepted' ? 'ok' : 'bad';
     if (e.stage === 'check-tests' || e.stage === 'check-static' || e.stage === 'check-review')
       return p.ok === false ? 'bad' : (p.ok === true ? 'ok' : '');
@@ -705,6 +759,7 @@ loadChat(); loadTasks(); loadSuggestions(); loadMetrics(); fetch('/api/tasks').t
   }
   function nodeText(e){
     const p = safe(e.payload);
+    if (e.stage === 'error') return p.reason || '请查看阶段事件。';
     if (e.stage === 'check-tests') return p.ok ? (p.passed + '/' + p.total + ' 通过') : (p.passed + '/' + p.total + ' 未通过');
     if (e.stage === 'check-review') {
       const checks = p.checks || [];
@@ -783,8 +838,20 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
                 host="127.0.0.1", port=8765) -> ThreadingHTTPServer:
     from .contract import TaskContract, TestCase
     from .engine import TaskScheduler
+    from .runtime import ModelError, OpenAICompatibleModel, ScriptedDemoModel
 
     scheduler = TaskScheduler(engine, workers=2)
+    bundled_key = Path(__file__).resolve().parent.parent / "deepseek-competition.key"
+    mode_lock = threading.Lock()
+    mode = "offline" if brain.demo else "custom"
+    cache_scope = uuid.uuid4().hex
+    active_chats = 0
+
+    def mode_state():
+        return {"mode": mode, "model": "scripted" if mode == "offline" else engine.model.model}
+
+    def bundled_available():
+        return ipaddress.ip_address(server.server_address[0]).is_loopback and bundled_key.is_file()
 
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -794,34 +861,55 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
             self.send_header("content-type", ctype)
             self.send_header("content-length", str(len(body)))
             self.send_header("cache-control", "no-store")
+            self.send_header("x-frame-options", "DENY")
+            self.send_header("x-content-type-options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
 
         def _json(self, obj, code=200):
             self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
 
-        def _body(self) -> dict:
-            n = int(self.headers.get("content-length", 0))
-            raw = self.rfile.read(n) if n else b"{}"
+        def _valid_host(self):
+            # Loopback and explicitly bound addresses only; a browser with a rebound DNS name
+            # must never gain same-origin access to a locally bound competition credential.
             try:
-                return json.loads(raw or b"{}")
-            except Exception:
-                return {}
+                authority = urlsplit("http://" + self.headers.get("Host", ""))
+                if (authority.port or 80) != self.server.server_port or authority.username is not None:
+                    return False
+                dest = self.connection.getsockname()[0]
+                return authority.hostname in {dest, host.lower()} or (
+                    authority.hostname == "localhost" and ipaddress.ip_address(dest).is_loopback)
+            except (ValueError, OSError):
+                return False
+
+        def _same_origin(self):
+            if self.headers.get("Sec-Fetch-Site", "none") not in {"same-origin", "none"}:
+                return False
+            origin = self.headers.get("Origin")
+            expected = "http://" + self.headers.get("Host", "")
+            if origin is not None:
+                return origin.lower() == expected.lower()
+            referer = self.headers.get("Referer")
+            if referer:
+                try:
+                    url = urlsplit(referer)
+                    return (url.scheme + "://" + url.netloc).lower() == expected.lower()
+                except ValueError:
+                    return False
+            return True
 
         def do_GET(self):  # noqa: N802
             path = self.path.split("?")[0]
+            if not self._valid_host():
+                return self._json({"error": "请通过服务绑定的本机地址访问。"}, 403)
             if path in ("/", "/index.html"):
-                return self._send(200, HTML.encode("utf-8"), "text/html; charset=utf-8")
-            if path == "/api/chat":
-                return self._json({"messages": chat.recent(200)})
-            if path == "/api/tasks":
-                return self._json({"tasks": engine.store.tasks(50)})
-            if path.startswith("/api/tasks/"):
-                tid = path.rsplit("/", 1)[-1]
-                task = engine.store.task(tid)
-                if not task:
-                    return self._json({"error": "not found"}, 404)
-                return self._json({"task": task, "events": engine.store.events(tid)})
+                button = '<button id="enterDeepSeek">一键 DeepSeek 在线</button>' if bundled_available() else ""
+                page = HTML.replace("<!-- bundled-mode-button -->", button)
+                return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            if path == "/api/mode":
+                with mode_lock:
+                    state = mode_state()
+                return self._json(state)
             if path == "/api/chat":
                 return self._json({"messages": chat.recent(200)})
             if path == "/api/tasks":
@@ -878,53 +966,52 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
                     "last_events": engine.store.events(last["task_id"]) if last else [],
                 }
                 items = [s.to_json() for s in predict.suggest_next(state)]
-                for s in items:
-                    chat.note_suggestion(s["id"], s["kind"], False)
+                if self._same_origin():
+                    for s in items:
+                        chat.note_suggestion(s["id"], s["kind"], False)
                 return self._json({"suggestions": items, "stats": chat.suggestion_stats()})
             if path == "/api/stream":
                 return self._stream()
             return self._json({"error": "not found"}, 404)
 
         def do_POST(self):  # noqa: N802
+            nonlocal active_chats
             path = self.path.split("?")[0]
-            if path == "/api/config" and self.command == "POST":
-                length = int(self.headers.get("content-length") or 0)
-                raw = self.rfile.read(length) or b"{}"
-                try:
-                    cfg = json.loads(raw.decode("utf-8"))
-                except Exception:
-                    return self._json({"ok": False, "error": "bad json"}, 400)
-                base = (cfg.get("base") or "").strip()
-                key = (cfg.get("key") or "").strip()
-                model = (cfg.get("model") or "deepseek-chat").strip()
-                if not base or not key:
-                    return self._json({"ok": False, "error": "base 和 key 必填"}, 400)
-                try:
-                    from .runtime import OpenAICompatibleModel
-                    engine.model = OpenAICompatibleModel(base, key, model)
-                    brain.demo = False
-                    return self._json({"ok": True, "model": model})
-                except Exception as exc:
-                    return self._json({"ok": False, "error": str(exc)}, 500)
+            if not self._valid_host() or not self._same_origin():
+                self.close_connection = True
+                return self._json({"error": "仅接受来自本控制台的请求。"}, 403)
+            try:
+                length = int(self.headers.get("content-length", 0))
+                if not 0 <= length <= 1024 * 1024:
+                    raise ValueError
+                data = json.loads(self.rfile.read(length) or b"{}")
+                if not isinstance(data, dict):
+                    raise ValueError
+            except (ValueError, UnicodeError):
+                self.close_connection = True
+                return self._json({"error": "请提供有效的 JSON 对象（最大 1 MiB）。"}, 400)
+            if path in ("/api/mode", "/api/config"):
+                with mode_lock:
+                    response, status = self._set_mode(path, data)
+                return self._json(response, status)
             if path == "/api/chat":
-                data = self._body()
                 text = str(data.get("text", ""))[:1000]
                 if not text.strip():
                     return self._json({"error": "empty"}, 400)
-                user_msg = chat.add("user", text)
-                hub.publish({"type": "chat", "message": user_msg})
-                reply_text = brain.reply(text)
-                bot_msg = chat.add("assistant", reply_text)
-                hub.publish({"type": "chat", "message": bot_msg})
-                return self._json({"message": bot_msg})
+                with mode_lock:
+                    active_chats += 1
+                try:
+                    reply = self._chat(text)
+                finally:
+                    with mode_lock:
+                        active_chats -= 1
+                return self._json({"message": reply})
             if path == "/api/suggest/accept":
-                data = self._body()
                 sid = str(data.get("id", ""))[:64]
                 if sid:
                     chat.note_suggestion(sid, str(data.get("kind", "task")), True)
                 return self._json({"ok": True, "stats": chat.suggestion_stats()})
             if path == "/api/tasks":
-                data = self._body()
                 try:
                     def to_case(t):
                         # 支持两种写法：{"args":[...],"expected":...} 或 [[...], expected]
@@ -944,7 +1031,10 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
                     priority = data.get("priority", 5)
                     if type(priority) is not int or not 0 <= priority <= 9:
                         raise ValueError("priority 必须是 0 至 9 的整数")
-                    scheduler.submit(c, priority=priority, use_cache=not brain.demo)
+                    with mode_lock:
+                        scope = cache_scope if mode == "custom" else mode
+                        c = replace(c, tenant=scope, model=mode_state()["model"])
+                        scheduler.submit(c, priority=priority, use_cache=mode == "custom")
                 except FileExistsError as e:
                     return self._json({"error": str(e)}, 409)
                 except queue.Full:
@@ -953,6 +1043,57 @@ def make_server(engine, hub: Hub, chat: ChatStore, brain: ChatBrain,
                     return self._json({"error": str(e)}, 400)
                 return self._json({"task_id": c.task_id, "status": "queued"}, 202)
             return self._json({"error": "not found"}, 404)
+
+        def _chat(self, text):
+            msg = chat.add("user", text)
+            hub.publish({"type": "chat", "message": msg})
+            msg = chat.add("assistant", brain.reply(text))
+            hub.publish({"type": "chat", "message": msg})
+            return msg
+
+        def _set_mode(self, path, data):
+            nonlocal mode, cache_scope
+            requested = "custom" if path == "/api/config" else data.get("mode")
+            if path == "/api/mode":
+                if set(data) != {"mode"} or requested not in ("offline", "deepseek"):
+                    return {"error": "请选择可复现离线或 DeepSeek 在线模式。"}, 400
+                if requested == "deepseek" and not bundled_available():
+                    return {"error": "本机未启用参赛在线入口，可选择离线或使用自己的 Key。"}, 403
+                if requested == mode:
+                    return mode_state(), 200
+            # submit() and changes to the model share mode_lock. unfinished_tasks covers
+            # waiting jobs as well as jobs already taken by either worker.
+            with scheduler.q.mutex:
+                busy = scheduler.q.unfinished_tasks != 0
+            if busy or active_chats:
+                return {"error": "任务或对话正在进行，请等它结束后再切换。"}, 409
+            if requested == "offline":
+                adapter = ScriptedDemoModel("fail-first")
+            elif requested == "deepseek":
+                try:
+                    key = bundled_key.read_text(encoding="utf-8-sig").strip()
+                    if not key or any(ch.isspace() for ch in key):
+                        raise ValueError
+                    adapter = OpenAICompatibleModel("https://api.deepseek.com", key, "deepseek-flash")
+                except (OSError, ValueError, ModelError):
+                    return {"error": "本机参赛凭据不可用，可选择离线或使用自己的 Key。"}, 503
+            else:
+                if not all(isinstance(data.get(k, ""), str) for k in ("base", "key", "model")):
+                    return {"error": "接口地址、Key 和模型名须为文本。"}, 400
+                base, key = (data.get(k, "").strip() for k in ("base", "key"))
+                model = data.get("model", "").strip() or "deepseek-chat"
+                if not base or not key:
+                    return {"error": "请填写接口地址和自己的 Key。"}, 400
+                try:
+                    adapter = OpenAICompatibleModel(base, key, model)
+                except (ValueError, ModelError):
+                    return {"error": "请检查接口地址、Key 和模型名。"}, 400
+                cache_scope = uuid.uuid4().hex
+            engine.model = adapter
+            brain.demo = requested == "offline"
+            mode = requested
+            hub.publish({"type": "mode"})
+            return mode_state(), 200
 
         def _stream(self):
             q = hub.subscribe()
