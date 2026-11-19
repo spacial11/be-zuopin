@@ -40,3 +40,7 @@ python -m tidal_harness serve --demo
 Web 接口 POST /api/tasks 接收 description、function_name 和 tests，支持可选的 priority（0–9，数字越小优先级越高）、max_rounds 和 task_id。默认两个工作线程，最多 64 个任务等待，优先级相同按入队顺序处理。POST 成功返回 202 和任务 ID，GET /api/tasks/{任务ID} 返回终态与逐轮事件。离线面板每次重新运行示例，以保留每一轮可回放的数据。
 
 参赛包的 Python 源码与本次提交对应。项目仓库为 https://github.com/spacial11/ye-zuopin 。项目自编源码使用本目录的 MIT 许可证。演示包内 CPython 与 Windows 运行组件分别沿用各自许可证。
+
+## 历史版本
+
+[Windows 演示包 v1.0.0](dist/ye-zuopin-v1.0.0.zip) 是前期打包版本。本次参赛实录中的小数反例与任务调度可从当前源码或本次参赛压缩包复现。
